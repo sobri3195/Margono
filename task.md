@@ -77,7 +77,7 @@ margono/
 - [x] **T-002 (P0, E00)** Write preliminary data flow and threat model. **DoD:** trust boundaries for browser, desktop, workers, cloud, mobile and external APIs documented. [NFR-security] Preliminary model: `docs/simulation.md`.
 - [x] **T-003 (P0, E01)** Initialize monorepo structure and root documentation. **DoD:** reproducible local environment and a readme that links source docs. Local setup and validation: `README.md`.
 - [ ] **T-004 (P0, E01)** Establish tooling: dependency locks, formatting, type checking, unit tests, secrets scanning, CI. **DoD:** clean baseline CI passes.
-- [ ] **T-005 (P0, E01)** Design data schema and migrations for users, roles, cases, consent, import rows, jobs and audit. **DoD:** migrations run on clean DB and test DB. [FR-010, FR-012]
+- [x] **T-005 (P0, E01)** Design data schema and migrations for users, roles, cases, consent, import rows, jobs and audit. **DoD:** migrations run on clean DB and test DB. [FR-010, FR-012] Migration and integration tests: `docs/database.md`.
 - [ ] **T-006 (P0, E01)** Define API contract conventions, error schema, UTC timestamps, correlation ID, idempotency key. **DoD:** example request/response fixtures documented.
 - [x] **T-007 (P0, E10)** Generate 20 fixed synthetic case fixtures and seeded variation generator. **DoD:** identical seed reproduces identical scenarios. [FR-064] Catalog and seed tests: `services/api/tests/test_simulation.py`.
 - [x] **T-008 (P0, E10)** Create explicit synthetic source and mobile profiles. **DoD:** zero real person records, clear synthetic labels. [FR-035] Synthetic profiles and tests: `services/api/tests/test_simulation.py`.
