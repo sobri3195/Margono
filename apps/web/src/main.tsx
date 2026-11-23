@@ -1,41 +1,8 @@
-import { StrictMode, useEffect, useState } from 'react';
+import { Component, StrictMode, useState, type ReactNode } from 'react';
 import { createRoot } from 'react-dom/client';
+import { useResource } from './api';
+import { decodeCatalog, decodeReadiness, type Catalog, type SyntheticCase, type Workspace } from './contracts';
 import './styles.css';
-
-type Workspace = 'web' | 'usb';
-
-type Catalog = {
-  mode: 'SYNTHETIC';
-  cases: SyntheticCase[];
-  sources: SourceProfile[];
-  devices: DeviceProfile[];
-};
-
-type SyntheticCase = {
-  case_id: string;
-  label: string;
-  workspace: Workspace;
-  scenario: string;
-  reference_id: string;
-};
-
-type SourceProfile = {
-  profile_id: string;
-  label: string;
-  behavior: 'fixture_available' | 'timeout_fixture';
-};
-
-type DeviceProfile = {
-  profile_id: string;
-  platform: 'Android' | 'iPhone';
-  capability: string;
-  result: 'sample_available' | 'unsupported';
-};
-
-type CatalogState =
-  | { status: 'loading' }
-  | { status: 'error' }
-  | { status: 'ready'; catalog: Catalog };
 
 function CaseDetails({ item, catalog }: { item: SyntheticCase; catalog: Catalog }) {
   const source = catalog.sources.find((profile) => profile.profile_id === item.reference_id);
@@ -109,33 +76,79 @@ function CatalogView({ catalog }: { catalog: Catalog }) {
   );
 }
 
-function App() {
-  const [state, setState] = useState<CatalogState>({ status: 'loading' });
-  const [attempt, setAttempt] = useState(0);
+function CatalogError({ message, correlationId, retry }: {
+  message: string;
+  correlationId: string | null;
+  retry: () => void;
+}) {
+  return (
+    <div className="message">
+      <p role="alert">{message}</p>
+      {correlationId && <p>ID korelasi <code>{correlationId}</code></p>}
+      <button type="button" onClick={retry}>Coba lagi</button>
+    </div>
+  );
+}
 
-  useEffect(() => {
-    const controller = new AbortController();
+class CatalogBoundary extends Component<{ children: ReactNode; fallback: ReactNode }, { failed: boolean }> {
+  state = { failed: false };
 
-    async function loadCatalog() {
-      try {
-        const response = await fetch('/api/v1/simulation/catalog', { signal: controller.signal });
-        if (!response.ok) throw new Error(`Catalog status: ${response.status}`);
-        const catalog: Catalog = await response.json();
-        if (catalog.mode !== 'SYNTHETIC') throw new Error('Expected a synthetic catalog');
-        if (!controller.signal.aborted) setState({ status: 'ready', catalog });
-      } catch {
-        if (!controller.signal.aborted) setState({ status: 'error' });
-      }
-    }
-
-    void loadCatalog();
-    return () => controller.abort();
-  }, [attempt]);
-
-  function retry() {
-    setState({ status: 'loading' });
-    setAttempt((value) => value + 1);
+  static getDerivedStateFromError() {
+    return { failed: true };
   }
+
+  render() {
+    return this.state.failed ? this.props.fallback : this.props.children;
+  }
+}
+
+const databaseLabels = {
+  ready: 'Siap',
+  not_configured: 'Belum dikonfigurasi',
+  unavailable: 'Tidak dapat dihubungi',
+  migration_required: 'Memerlukan migrasi',
+};
+
+function SystemStatus() {
+  const { state, retry } = useResource('/api/v1/readiness', decodeReadiness, 503);
+
+  return (
+    <section className="message system-status" aria-labelledby="system-status-label">
+      <h2 id="system-status-label">Status operasional</h2>
+      {state.status === 'loading' && <p role="status">Memeriksa kesiapan…</p>}
+      {state.status === 'error' && (
+        <>
+          <p role="status">Status kesiapan tidak dapat dimuat.</p>
+          {state.correlationId && <p>ID korelasi <code>{state.correlationId}</code></p>}
+          <button type="button" onClick={retry}>Periksa status lagi</button>
+        </>
+      )}
+      {state.status === 'ready' && (
+        <>
+          <dl>
+            <div><dt>PostgreSQL</dt><dd>{databaseLabels[state.data.checks.database]}</dd></div>
+            <div><dt>Worker</dt><dd>Belum tersedia</dd></div>
+            <div><dt>Sinkronisasi</dt><dd>Belum tersedia</dd></div>
+            <div><dt>Pilot</dt><dd>Belum siap</dd></div>
+          </dl>
+          {state.data.checks.database === 'unavailable' && state.correlationId && (
+            <p>ID korelasi <code>{state.correlationId}</code></p>
+          )}
+          <button type="button" onClick={retry}>Periksa status lagi</button>
+        </>
+      )}
+    </section>
+  );
+}
+
+const catalogFailureMessages = {
+  request: 'Katalog tidak dapat dimuat. Periksa layanan API lokal.',
+  invalid: 'Respons katalog tidak valid.',
+  timeout: 'Permintaan katalog melewati batas waktu.',
+};
+
+function App() {
+  const { state, retry, attempt } = useResource('/api/v1/simulation/catalog', decodeCatalog);
 
   return (
     <main className="page">
@@ -146,12 +159,16 @@ function App() {
       </header>
       {state.status === 'loading' && <p role="status" className="message">Memuat katalog…</p>}
       {state.status === 'error' && (
-        <div className="message">
-          <p role="alert">Katalog tidak dapat dimuat. Periksa layanan API lokal.</p>
-          <button type="button" onClick={retry}>Coba lagi</button>
-        </div>
+        <CatalogError message={catalogFailureMessages[state.reason]} correlationId={state.correlationId} retry={retry} />
       )}
-      {state.status === 'ready' && <CatalogView catalog={state.catalog} />}
+      {state.status === 'ready' && (
+        <CatalogBoundary key={attempt} fallback={
+          <CatalogError message="Katalog tidak dapat ditampilkan." correlationId={state.correlationId} retry={retry} />
+        }>
+          <CatalogView catalog={state.data} />
+        </CatalogBoundary>
+      )}
+      <SystemStatus />
     </main>
   );
 }

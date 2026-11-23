@@ -52,3 +52,7 @@ select { display: block; width: 100%; margin-top: 0.6rem; }
   .workspace-content { grid-template-columns: 1fr; }
   .case-picker { border-right: 0; border-bottom: 1px solid var(--line); }
 }
+
+.system-status { margin-top: 1rem; }
+.system-status dl { grid-template-columns: repeat(auto-fit, minmax(8rem, 1fr)); }
+.message code { overflow-wrap: anywhere; }

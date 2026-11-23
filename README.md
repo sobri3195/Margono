@@ -27,7 +27,10 @@ Buka `http://127.0.0.1:5173`. Pilih **Web Intelligence** untuk melihat `SYN-001`
 (cd services/api && uv run --locked ruff format --check .)
 (cd services/api && uv run --locked python -m pytest -q)
 (cd apps/web && npm ci && npm run build)
+(cd apps/web && npx playwright install chromium && npm test)
 ```
+
+Panel status operasional memeriksa `/api/v1/readiness`. Katalog lokal bisa digunakan sebelum PostgreSQL dikonfigurasi. Lihat [kesiapan pilot](docs/pilot-readiness.md) untuk arti status dan prasyarat pilot.
 
 ## PostgreSQL untuk pengembangan
 
