@@ -9,7 +9,7 @@ Gunakan Python 3.12 dengan [uv](https://docs.astral.sh/uv/) serta Node.js 24 den
 ```bash
 cd services/api
 uv sync --locked
-uv run --locked uvicorn margono_api.main:app --host 127.0.0.1 --port 8000
+uv run --locked uvicorn margono_api.main:app --host 127.0.0.1 --port 8000 --no-access-log
 ```
 
 ```bash

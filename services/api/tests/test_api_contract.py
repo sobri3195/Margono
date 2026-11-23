@@ -32,6 +32,20 @@ def test_plan_validation_has_stable_safe_error(params):
     assert UUID(response.headers["X-Correlation-ID"]).version == 4
 
 
+@pytest.mark.parametrize("field", ["name", "profile", "source_url", "device_id"])
+def test_plan_rejects_inputs_outside_synthetic_scope(field, monkeypatch):
+    def unexpected_plan(_seed: int):
+        pytest.fail("Rejected inputs must not reach the plan generator.")
+
+    monkeypatch.setattr(main, "generate_variation", unexpected_plan)
+    response = client.get(PLAN_URL, params={"seed": 42, field: "synthetic-placeholder"})
+    assert response.status_code == 422
+    assert response.json() == {
+        "code": "invalid_request",
+        "message": "Request parameters are invalid.",
+    }
+
+
 def test_case_timestamps_use_rfc3339_utc():
     response = client.get("/api/v1/simulation/cases/SYN-001")
     assert response.json()["created_at"] == "2026-01-01T00:00:00Z"

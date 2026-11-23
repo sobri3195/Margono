@@ -1,13 +1,13 @@
 # Kontrak HTTP v1
 
-API simulasi menyediakan JSON melalui `GET` pada `/api/v1`. Skema yang berlaku tersedia di `/openapi.json`.
+API simulasi menyediakan JSON melalui `GET` pada `/api/v1`. Skema yang berlaku tersedia di `/openapi.json`. Gunakan fixture sesuai [batas penggunaan](acceptable-use.md).
 
 | Endpoint | Hasil |
 | --- | --- |
 | `GET /api/v1/health` | `{"status":"ok","mode":"SYNTHETIC"}` |
 | `GET /api/v1/simulation/catalog` | Kasus, profil sumber, dan profil perangkat sintetis. |
 | `GET /api/v1/simulation/cases/{case_id}` | Satu kasus sintetis. ID yang tidak dikenal menghasilkan `404 case_not_found`. |
-| `GET /api/v1/simulation/plans?seed=42` | Tiga Case ID dari setiap workspace. Seed berupa bilangan bulat bertanda 32-bit. Permintaan dengan seed yang sama menghasilkan urutan yang sama selama katalog dan algoritme tetap sama. |
+| `GET /api/v1/simulation/plans?seed=42` | Tiga Case ID dari setiap workspace. Seed berupa bilangan bulat bertanda 32-bit. Parameter query tambahan menghasilkan `422 invalid_request`. Permintaan dengan seed yang sama menghasilkan urutan yang sama selama katalog dan algoritme tetap sama. |
 
 ## Contoh respons
 

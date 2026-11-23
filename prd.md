@@ -18,6 +18,8 @@ Both share internal MFA, four-role RBAC, Case ID, evidence provenance, dual repo
 
 **Safety boundary:** The platform must not identify, infer, label, score, or predict sexual orientation, gender identity, intimate relationships, other sensitive personal characteristics, or personnel suitability based on those characteristics. It must not mass-enumerate personal social media accounts from name lists, and it must not extract private phone communications or personal media. Case handling remains human reviewed and focused on independently verifiable cybersecurity events.
 
+See [acceptable use and review criteria](docs/acceptable-use.md) for the simulation boundary and consent example.
+
 ## 2. Problem Statement
 
 Cybersecurity analysts may manage fragmented datasets: security-relevant public indicators, mobile diagnostic metadata from consent-based sessions, authorization records, and investigation files. Inconsistency between tools can lead to lost provenance, duplicate jobs, unreviewed false positives, and incomplete audit history. MARGONO aims to create a traceable, secure workflow without over-collecting personal data.

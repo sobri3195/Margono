@@ -73,7 +73,7 @@ margono/
 
 ### Month 1 - Sprint 1: Governance, requirements, repository
 
-- [ ] **T-001 (P0, E00)** Freeze allowed use cases and explicit non-goals in docs and API contracts. **DoD:** policy assertions appear in PRD, sample consent, test plans, and review checklist. [FR-028]
+- [x] **T-001 (P0, E00)** Freeze allowed use cases and explicit non-goals in docs and API contracts. **DoD:** policy assertions appear in PRD, sample consent, test plans, and review checklist. [FR-028] Policy and verification: `docs/acceptable-use.md`.
 - [x] **T-002 (P0, E00)** Write preliminary data flow and threat model. **DoD:** trust boundaries for browser, desktop, workers, cloud, mobile and external APIs documented. [NFR-security] Preliminary model: `docs/simulation.md`.
 - [x] **T-003 (P0, E01)** Initialize monorepo structure and root documentation. **DoD:** reproducible local environment and a readme that links source docs. Local setup and validation: `README.md`.
 - [ ] **T-004 (P0, E01)** Establish tooling: dependency locks, formatting, type checking, unit tests, secrets scanning, CI. **DoD:** clean baseline CI passes.
