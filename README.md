@@ -29,6 +29,10 @@ Buka `http://127.0.0.1:5173`. Pilih **Web Intelligence** untuk melihat `SYN-001`
 (cd apps/web && npm ci && npm run build)
 ```
 
+## PostgreSQL untuk pengembangan
+
+Lihat [panduan database](docs/database.md) untuk menjalankan PostgreSQL lokal, menerapkan migrasi, dan menguji constraint pada database terpisah.
+
 ## Dokumen
 
 - [PRD](prd.md) mencatat persyaratan dan kriteria penerimaan.
