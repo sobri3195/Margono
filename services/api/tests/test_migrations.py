@@ -6,9 +6,12 @@ import pytest
 import sqlalchemy as sa
 from alembic import command
 from alembic.config import Config
+from fastapi.testclient import TestClient
 from sqlalchemy.engine import make_url
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.schema import CreateSchema, DropSchema
+
+from margono_api.main import app
 
 pytestmark = pytest.mark.postgres
 API_DIR = Path(__file__).resolve().parents[1]
@@ -214,3 +217,17 @@ def test_consent_revocation_requires_valid_timestamp(isolated_database):
             ).rowcount
             == 1
         )
+
+
+def test_readiness_distinguishes_unmigrated_and_migrated_postgres(isolated_database):
+    config, _, _ = isolated_database
+    with TestClient(app) as client:
+        before = client.get("/api/v1/readiness")
+        assert before.status_code == 503
+        assert before.json()["checks"]["database"] == "migration_required"
+
+        command.upgrade(config, "head")
+        after = client.get("/api/v1/readiness")
+        assert after.status_code == 503
+        assert after.json()["checks"]["database"] == "ready"
+        assert after.json()["pilot"] == "blocked"

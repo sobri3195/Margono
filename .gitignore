@@ -8,3 +8,4 @@ dist/
 .env
 .env.*
 !.env.example
+/apps/web/test-results/

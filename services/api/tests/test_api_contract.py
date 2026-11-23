@@ -76,7 +76,7 @@ def test_router_errors_follow_contract_and_keep_allow_header():
     assert "GET" in wrong_method.headers["Allow"]
 
 
-def test_internal_errors_have_correlation_id_and_hide_details(monkeypatch):
+def test_internal_errors_have_correlation_id_and_hide_details(monkeypatch, caplog):
     def fail(_seed: int):
         raise RuntimeError("private detail")
 
@@ -90,6 +90,9 @@ def test_internal_errors_have_correlation_id_and_hide_details(monkeypatch):
         "message": "An internal error occurred.",
     }
     assert UUID(response.headers["X-Correlation-ID"]).version == 4
+
+    assert response.headers["X-Correlation-ID"] in caplog.text
+    assert "private detail" not in caplog.text
 
 
 def test_openapi_declares_the_error_contract():
