@@ -12,13 +12,10 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 from starlette.exceptions import HTTPException
 
+from .errors import ApiError
 from .fixtures import CATALOG, CaseFixture, Catalog, Variation, generate_variation
+from .operations import router as operations_router
 from .readiness import Dependencies, Readiness, database_status
-
-
-class ApiError(BaseModel):
-    code: str
-    message: str
 
 
 class PlanQuery(BaseModel):
@@ -38,7 +35,7 @@ app = FastAPI(
     title="MARGONO Simulation API",
     version="1.1.0",
     description=(
-        "Read-only API for synthetic cybersecurity fixtures. "
+        "Local API for synthetic cybersecurity fixtures and operator cases. "
         "The catalog provides synthetic case IDs. The plan endpoint accepts only a numeric seed."
     ),
     lifespan=lifespan,
@@ -46,6 +43,7 @@ app = FastAPI(
     redoc_url=None,
     responses={500: {"model": ApiError}},
 )
+app.include_router(operations_router)
 CASES_BY_ID = {case.case_id: case for case in CATALOG.cases}
 CORRELATION_HEADER = "X-Correlation-ID"
 logger = getLogger(__name__)

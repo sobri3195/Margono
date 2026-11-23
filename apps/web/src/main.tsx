@@ -1,5 +1,6 @@
 import { Component, StrictMode, useState, type ReactNode } from 'react';
 import { createRoot } from 'react-dom/client';
+import { CaseConsole } from './CaseConsole';
 import { useResource } from './api';
 import { decodeCatalog, decodeReadiness, type Catalog, type SyntheticCase, type Workspace } from './contracts';
 import './styles.css';
@@ -169,6 +170,7 @@ function App() {
         </CatalogBoundary>
       )}
       <SystemStatus />
+      {state.status === 'ready' && <CaseConsole fixtures={state.data.cases} />}
     </main>
   );
 }

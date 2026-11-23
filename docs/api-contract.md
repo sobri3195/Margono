@@ -1,6 +1,6 @@
 # Kontrak HTTP v1
 
-API simulasi menyediakan JSON melalui `GET` pada `/api/v1`. Skema yang berlaku tersedia di `/openapi.json`. Gunakan fixture sesuai [batas penggunaan](acceptable-use.md).
+Endpoint katalog simulasi menyediakan JSON melalui `GET` pada `/api/v1`. Operasi persisten dengan sesi operator dijelaskan di [alur kasus sintetis](synthetic-cases.md). Skema yang berlaku tersedia di `/openapi.json`. Gunakan fixture sesuai [batas penggunaan](acceptable-use.md).
 
 | Endpoint | Hasil |
 | --- | --- |

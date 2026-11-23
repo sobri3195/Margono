@@ -36,4 +36,6 @@ export MARGONO_TEST_DATABASE_URL="${MARGONO_DATABASE_URL%/*}/margono_test"
 - `imports` dan `import_rows` mempertahankan posisi impor dan label referensi. Dua baris dapat memiliki label yang sama.
 - `jobs` menjaga keunikan kunci idempotensi per kasus dan jenis job. `audit_events` menyimpan metadata peristiwa, termasuk ID korelasi jika tersedia. Kolom waktu menggunakan tipe PostgreSQL `timestamptz`.
 
-PR skema belum menyediakan autentikasi, penegakan RBAC, pemrosesan antrean, penghentian job ketika consent dicabut, atau audit bertanda tangan. API simulasi tetap baca-saja dan tidak membuka akses ke tabel ini.
+Revisi integritas memvalidasi tujuan dan ruang lingkup kasus, label baris impor valid, dan keputusan consent. Jika ada tujuan atau ruang lingkup kosong, atau status impor valid tanpa label, migrasi berhenti dan transaksi dibatalkan. Tinjau dan koreksi data dari sumber yang sah sebelum menjalankan ulang migrasi. Data historis consent hanya disalin sesuai keputusan terakhir yang tersimpan. Riwayat baru mencatat keputusan awal dan pencabutan, tanpa perubahan status kembali ke persetujuan.
+
+Lihat [alur kasus sintetis](synthetic-cases.md) untuk login lokal dan impor. Worker, penghentian job berdasarkan consent, dan audit bertanda tangan masih terbuka.

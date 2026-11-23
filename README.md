@@ -1,6 +1,6 @@
 # MARGONO
 
-Prototipe lokal untuk membuka katalog kasus keamanan siber sintetis melalui workspace Web Intelligence dan USB Security. Semua data di layar berasal dari fixture. Prototipe hanya menyediakan operasi baca.
+Prototipe lokal untuk membuka katalog kasus keamanan siber sintetis melalui workspace Web Intelligence dan USB Security. Semua data di layar berasal dari fixture. Katalog dapat dibuka langsung. Kasus persisten dan impor sintetis menggunakan akun operator lokal.
 
 ## Menjalankan prototipe
 
@@ -35,6 +35,8 @@ Panel status operasional memeriksa `/api/v1/readiness`. Katalog lokal bisa digun
 ## PostgreSQL untuk pengembangan
 
 Lihat [panduan database](docs/database.md) untuk menjalankan PostgreSQL lokal, menerapkan migrasi, dan menguji constraint pada database terpisah.
+
+Untuk login lokal, kasus persisten, dan impor CSV sintetis, ikuti [panduan kasus simulasi](docs/synthetic-cases.md).
 
 ## Dokumen
 
