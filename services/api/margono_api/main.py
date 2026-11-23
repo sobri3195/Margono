@@ -6,7 +6,7 @@ from uuid import uuid4
 from fastapi import FastAPI, Query, Request, Response
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, Field
 from starlette.exceptions import HTTPException
 
 from .fixtures import CATALOG, CaseFixture, Catalog, Variation, generate_variation
@@ -17,9 +17,19 @@ class ApiError(BaseModel):
     message: str
 
 
+class PlanQuery(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    seed: int = Field(ge=-(2**31), le=2**31 - 1)
+
+
 app = FastAPI(
     title="MARGONO Simulation API",
     version="1.1.0",
+    description=(
+        "Read-only API for synthetic cybersecurity fixtures. "
+        "The catalog provides synthetic case IDs. The plan endpoint accepts only a numeric seed."
+    ),
     docs_url=None,
     redoc_url=None,
     responses={500: {"model": ApiError}},
@@ -98,7 +108,5 @@ def case_detail(case_id: str) -> CaseFixture:
 
 
 @app.get("/api/v1/simulation/plans", responses={422: {"model": ApiError}})
-def simulation_plan(
-    seed: Annotated[int, Query(ge=-(2**31), le=2**31 - 1)],
-) -> Variation:
-    return generate_variation(seed)
+def simulation_plan(query: Annotated[PlanQuery, Query()]) -> Variation:
+    return generate_variation(query.seed)
