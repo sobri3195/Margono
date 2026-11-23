@@ -21,12 +21,8 @@ Prototipe ini tidak menerima unggahan atau data pribadi, tidak mengakses jaringa
 
 ## Kontrak HTTP v1
 
-- `GET /api/v1/health` mengembalikan `{"status":"ok","mode":"SYNTHETIC"}`.
-- `GET /api/v1/simulation/catalog` mengembalikan `mode`, `cases`, `sources`, dan `devices`.
-- `GET /api/v1/simulation/cases/SYN-001` mengembalikan satu kasus. ID yang tidak dikenal menghasilkan HTTP 404 dengan isi `{"code":"case_not_found","message":"Synthetic case not found."}`.
-- API menghasilkan UUID versi 4 baru di header `X-Correlation-ID` pada setiap respons prototipe yang diterima melalui middleware.
-- Endpoint simulasi bersifat read-only dan tidak memerlukan kunci idempotensi. Untuk operasi tulis mendatang, dokumentasikan semantik `Idempotency-Key` dan timestamp RFC 3339 UTC bersama endpoint yang menggunakannya.
+Lihat [kontrak API](api-contract.md) untuk endpoint, contoh request dan respons, serta konvensi waktu, korelasi, dan idempotensi.
 
 ## Bukti saat ini
 
-Tes API mencakup katalog 20 kasus, referensi profil, ID kasus yang berbeda untuk label ganda, respons 404, penolakan tulis, ID korelasi, dan generator seed. Katalog hanya mendeskripsikan skenario antrean, consent, integritas, dan sinkronisasi. Skenario tersebut belum menjalankan alur operasional di Gate A.
+Tes API mencakup katalog 20 kasus, referensi profil, ID kasus yang berbeda untuk label ganda, respons kesalahan, penolakan tulis, ID korelasi, waktu UTC, dan generator seed. Katalog hanya mendeskripsikan skenario antrean, consent, integritas, dan sinkronisasi. Skenario tersebut belum menjalankan alur operasional di Gate A.
