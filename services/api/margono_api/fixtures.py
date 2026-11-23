@@ -1,7 +1,8 @@
+from datetime import UTC, datetime, timedelta
 from random import Random
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import AwareDatetime, BaseModel, ConfigDict
 
 Workspace = Literal["web", "usb"]
 
@@ -18,6 +19,7 @@ class CaseFixture(Fixture):
     workspace: Workspace
     scenario: str
     reference_id: str
+    created_at: AwareDatetime
 
 
 class SourceProfile(Fixture):
@@ -43,6 +45,8 @@ class Catalog(Fixture):
     sources: tuple[SourceProfile, ...]
     devices: tuple[DeviceProfile, ...]
 
+
+FIXTURE_START = datetime(2026, 1, 1, tzinfo=UTC)
 
 CATALOG = Catalog(
     sources=(
@@ -76,6 +80,7 @@ CATALOG = Catalog(
             workspace=workspace,
             scenario=scenario,
             reference_id=reference_id,
+            created_at=FIXTURE_START + timedelta(minutes=number - 1),
         )
         for number, (label, workspace, scenario, reference_id) in enumerate(
             (
