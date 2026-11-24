@@ -2,7 +2,7 @@
 
 ## CI dan browser
 
-Workflow CI menjalankan Ruff, tes API dan PostgreSQL, build web, serta regresi Chromium. Job `secrets` memindai riwayat Git yang di-checkout dengan Gitleaks versi tetap. Skrip memverifikasi SHA-256 distribusi dan menyamarkan kecocokan sebelum mencetaknya. Untuk menjalankan scan yang sama di Linux x64, gunakan `bash scripts/scan-secrets.sh` dari root repositori.
+Workflow CI menjalankan Ruff, tes API dan PostgreSQL, build web, serta regresi Chromium. Job `secrets` memindai riwayat Git yang di-checkout dengan Gitleaks versi tetap. Skrip memverifikasi SHA-256 distribusi dan menyamarkan kecocokan sebelum mencetaknya. Untuk menjalankan scan yang sama di Linux x64, gunakan `bash scripts/scan-secrets.sh` dari root repositori. Workflow hasil pembaruan ini lulus di main pada [run 45411639371](https://github.com/sobri3195/Margono/actions/runs/45411639371).
 
 Regresi browser meliputi respons katalog yang rusak, timeout, tema, keyboard, batas kontras kontrol, axe-core, tautan kasus, serta akses ke tautan kasus tersimpan. Pemeriksaan otomatis mencakup semantik yang terlihat oleh browser pada tampilan desktop. Uji manual dengan screen reader dan aplikasi desktop Tauri masih terbuka.
 

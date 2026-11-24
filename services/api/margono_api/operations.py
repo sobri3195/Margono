@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 from datetime import datetime
 from hashlib import sha256
+from re import search
 from secrets import token_urlsafe
 from threading import BoundedSemaphore
 from typing import Annotated, Literal
@@ -8,7 +9,7 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, Header, Query, Request, Response
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from pydantic import BaseModel, Field, StringConstraints
+from pydantic import BaseModel, BeforeValidator, Field, StringConstraints
 from sqlalchemy import text
 from sqlalchemy.engine import Connection, RowMapping
 
@@ -21,7 +22,7 @@ from .csv_imports import (
     preview_csv,
     read_columns,
 )
-from .database import database_transaction
+from .database import database_transaction, open_database
 from .errors import api_error
 from .fixtures import CATALOG
 from .passwords import verify_password
@@ -37,8 +38,22 @@ Bearer = Annotated[
     HTTPAuthorizationCredentials | None, Depends(HTTPBearer(auto_error=False))
 ]
 OperatorName = Annotated[str, StringConstraints(pattern=r"^[a-z0-9][a-z0-9._-]{0,63}$")]
+
+
+def reject_control_characters(value: object) -> object:
+    if isinstance(value, str) and search(r"[\x00-\x1f\x7f-\x9f]", value):
+        raise ValueError("Case text cannot contain control characters.")
+    return value
+
+
 CaseText = Annotated[
-    str, StringConstraints(strip_whitespace=True, min_length=1, max_length=500)
+    str,
+    StringConstraints(strip_whitespace=True, min_length=1, max_length=500),
+    BeforeValidator(reject_control_characters),
+]
+IDEMPOTENCY_KEY_PATTERN = r"^[A-Za-z0-9._:-]{1,128}$"
+IdempotencyKey = Annotated[
+    str, Header(alias="Idempotency-Key", pattern=IDEMPOTENCY_KEY_PATTERN)
 ]
 FixtureId = Annotated[str, StringConstraints(pattern=r"^SYN-[0-9]{3}$")]
 CASE_OPERATORS = {"osint_analyst", "forensic_examiner"}
@@ -96,7 +111,9 @@ def auth_required():
     )
 
 
-def signed_in(db: Database, bearer: Bearer) -> Operator:
+def authenticate_operator(
+    db: Connection, bearer: HTTPAuthorizationCredentials | None
+) -> Operator:
     if (
         bearer is None
         or len(bearer.credentials) != 43
@@ -124,6 +141,10 @@ def signed_in(db: Database, bearer: Bearer) -> Operator:
     return Operator(user.id, user.username, frozenset(roles), digest)
 
 
+def signed_in(db: Database, bearer: Bearer) -> Operator:
+    return authenticate_operator(db, bearer)
+
+
 CurrentOperator = Annotated[Operator, Depends(signed_in, scope="function")]
 
 
@@ -133,15 +154,18 @@ def write_audit(
     operator_id: UUID,
     action: str,
     case_id: UUID | None = None,
+    *,
+    import_id: UUID | None = None,
 ):
     db.execute(
-        text("""INSERT INTO audit_events (case_id, actor_id, action, correlation_id)
-                       VALUES (:case, :actor, :action, :correlation)"""),
+        text("""INSERT INTO audit_events (case_id, actor_id, action, correlation_id, import_id)
+                       VALUES (:case, :actor, :action, :correlation, :import_id)"""),
         {
             "case": case_id,
             "actor": operator_id,
             "action": action,
             "correlation": UUID(request.state.correlation_id),
+            "import_id": import_id,
         },
     )
 
@@ -229,16 +253,55 @@ def visible_case(
 
 @router.post("/cases", status_code=201)
 def create_case(
-    payload: CaseInput, request: Request, db: Database, user: CurrentOperator
+    payload: CaseInput,
+    request: Request,
+    bearer: Bearer,
+    key: Annotated[
+        str | None, Header(alias="Idempotency-Key", pattern=IDEMPOTENCY_KEY_PATTERN)
+    ] = None,
 ) -> CaseView:
-    if not CASE_OPERATORS & user.roles:
-        raise api_error(403, "case_access_denied", "This role cannot create cases.")
-    if payload.fixture_id not in FIXTURE_IDS:
-        raise api_error(404, "case_not_found", "Synthetic fixture not found.")
+    # The request model is validated before this transaction starts.
+    with open_database() as db:
+        user = authenticate_operator(db, bearer)
+        if not CASE_OPERATORS & user.roles:
+            raise api_error(403, "case_access_denied", "This role cannot create cases.")
+        if payload.fixture_id not in FIXTURE_IDS:
+            raise api_error(404, "case_not_found", "Synthetic fixture not found.")
+        return insert_case(db, user, payload, request, key)
+
+
+def insert_case(
+    db: Connection,
+    user: Operator,
+    payload: CaseInput,
+    request: Request,
+    key: str | None,
+) -> CaseView:
+    fingerprint = sha256(payload.model_dump_json().encode()).hexdigest()
+    if key is not None:
+        # Serialize creation for one operator so concurrent retries see the same receipt.
+        db.execute(
+            text("SELECT id FROM users WHERE id = :id FOR NO KEY UPDATE"),
+            {"id": user.id},
+        )
+        prior = db.execute(
+            text("""SELECT payload_sha256, response FROM case_creation_receipts
+                    WHERE operator_id = :operator AND idempotency_key = :key"""),
+            {"operator": user.id, "key": key},
+        ).one_or_none()
+        if prior is not None:
+            if prior.payload_sha256 != fingerprint:
+                raise api_error(
+                    409,
+                    "idempotency_conflict",
+                    "This key belongs to a different case creation.",
+                )
+            return CaseView.model_validate(prior.response)
+
     row = (
         db.execute(
             text(f"""INSERT INTO cases (owner_id, synthetic_fixture_id, purpose, scope)
-                VALUES (:owner, :fixture, :purpose, :scope) RETURNING {CASE_COLUMNS}"""),
+                 VALUES (:owner, :fixture, :purpose, :scope) RETURNING {CASE_COLUMNS}"""),
             {
                 "owner": user.id,
                 "fixture": payload.fixture_id,
@@ -249,19 +312,51 @@ def create_case(
         .mappings()
         .one()
     )
+    result = CaseView.model_validate(row)
     write_audit(db, request, user.id, "case.created", row.id)
-    return CaseView.model_validate(dict(row))
+    if key is not None:
+        db.execute(
+            text("""INSERT INTO case_creation_receipts
+                    (operator_id, idempotency_key, payload_sha256, case_id, response)
+                    VALUES (:operator, :key, :fingerprint, :case, CAST(:response AS jsonb))"""),
+            {
+                "operator": user.id,
+                "key": key,
+                "fingerprint": fingerprint,
+                "case": row.id,
+                "response": result.model_dump_json(),
+            },
+        )
+    return result
 
 
 @router.get("/cases")
-def list_cases(db: Database, user: CurrentOperator) -> list[CaseView]:
+def list_cases(
+    response: Response,
+    db: Database,
+    user: CurrentOperator,
+    before: UUID | None = None,
+    limit: Annotated[int, Query(ge=1, le=100)] = 100,
+) -> list[CaseView]:
     scope = case_condition(user)
-    rows = db.execute(
-        text(f"""SELECT {CASE_COLUMNS} FROM cases WHERE synthetic_fixture_id IS NOT NULL AND ({scope})
-                ORDER BY created_at DESC, id LIMIT 100"""),
-        {"owner": user.id},
-    ).mappings()
-    return [CaseView.model_validate(dict(row)) for row in rows]
+    params = {"owner": user.id, "limit": limit + 1}
+    cutoff = ""
+    if before is not None:
+        cursor = visible_case(db, user, before)
+        cutoff = " AND (created_at < :at OR (created_at = :at AND id > :id))"
+        params.update(at=cursor.created_at, id=before)
+    rows = (
+        db.execute(
+            text(f"""SELECT {CASE_COLUMNS} FROM cases WHERE synthetic_fixture_id IS NOT NULL AND ({scope})
+                 {cutoff} ORDER BY created_at DESC, id LIMIT :limit"""),
+            params,
+        )
+        .mappings()
+        .all()
+    )
+    if len(rows) > limit:
+        response.headers["X-Next-Cursor"] = str(rows[limit - 1].id)
+    return [CaseView.model_validate(row) for row in rows[:limit]]
 
 
 @router.get("/cases/{case_id}")
@@ -414,9 +509,7 @@ def confirm_import(
     request: Request,
     db: Database,
     user: CurrentOperator,
-    key: Annotated[
-        str, Header(alias="Idempotency-Key", pattern=r"^[A-Za-z0-9._:-]{1,128}$")
-    ],
+    key: IdempotencyKey,
 ) -> ImportResult:
     case = require_import_access(db, user, case_id, lock=True)
     digest = sha256(payload.content.encode()).hexdigest()
@@ -465,7 +558,7 @@ def confirm_import(
             for row in preview.rows
         ],
     )
-    write_audit(db, request, user.id, "import.confirmed", case_id)
+    write_audit(db, request, user.id, "import.confirmed", case_id, import_id=batch)
     valid = sum(row.status == "valid" for row in preview.rows)
     return ImportResult(
         id=batch,
@@ -478,7 +571,11 @@ def confirm_import(
 
 @router.get("/cases/{case_id}/imports/{import_id}/evidence")
 def import_evidence(
-    case_id: UUID, import_id: UUID, db: Database, user: CurrentOperator
+    case_id: UUID,
+    import_id: UUID,
+    request: Request,
+    db: Database,
+    user: CurrentOperator,
 ) -> Response:
     visible_case(db, user, case_id)
     row = db.execute(
@@ -494,6 +591,9 @@ def import_evidence(
         raise api_error(
             409, "evidence_integrity_error", "The evidence failed verification."
         )
+    write_audit(
+        db, request, user.id, "import.evidence_served", case_id, import_id=import_id
+    )
     return Response(
         row.content,
         media_type="application/octet-stream",

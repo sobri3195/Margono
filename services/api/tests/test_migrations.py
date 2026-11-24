@@ -21,6 +21,7 @@ def test_migration_up_down_up(isolated_database):
         "alembic_version",
         "audit_events",
         "cases",
+        "case_creation_receipts",
         "consent_decisions",
         "consent_records",
         "device_sessions",
@@ -299,5 +300,60 @@ def test_upgrade_requires_review_of_invalid_legacy_records(isolated_database):
     with engine.connect() as db:
         assert (
             db.scalar(sa.text("SELECT version_num FROM alembic_version"))
-            == "0004_csv_evidence"
+            == "0005_case_retry_audit"
         )
+
+
+def test_audit_upgrade_preserves_old_events_and_rejects_mismatched_imports(
+    isolated_database,
+):
+    config, engine, _ = isolated_database
+    command.upgrade(config, "0004_csv_evidence")
+    with engine.begin() as db:
+        user = db.scalar(
+            sa.text("INSERT INTO users (username) VALUES ('legacy') RETURNING id")
+        )
+        case_ids = (
+            db.execute(
+                sa.text("""
+            INSERT INTO cases (owner_id, purpose, scope)
+            VALUES (:user, 'Legacy fixture A', 'Scope'), (:user, 'Legacy fixture B', 'Scope')
+            RETURNING id
+        """),
+                {"user": user},
+            )
+            .scalars()
+            .all()
+        )
+        batch_id = db.scalar(
+            sa.text("""
+            INSERT INTO imports (case_id, submitted_by_id, source_ref)
+            VALUES (:case, :user, 'legacy') RETURNING id
+        """),
+            {"case": case_ids[0], "user": user},
+        )
+        event_id = db.scalar(
+            sa.text("""
+            INSERT INTO audit_events (case_id, actor_id, action) VALUES (:case, :actor, 'import.confirmed')
+            RETURNING id
+        """),
+            {"case": case_ids[0], "actor": user},
+        )
+
+    command.upgrade(config, "head")
+    with engine.begin() as db:
+        legacy = db.execute(
+            sa.text("SELECT * FROM audit_events WHERE id = :id"), {"id": event_id}
+        ).one()
+        assert legacy.action == "import.confirmed" and legacy.import_id is None
+        with (
+            pytest.raises(IntegrityError, match="fk_audit_import_case"),
+            db.begin_nested(),
+        ):
+            db.execute(
+                sa.text("""
+                INSERT INTO audit_events (case_id, import_id, actor_id, action)
+                VALUES (:case, :batch, :actor, 'import.evidence_served')
+            """),
+                {"case": case_ids[1], "batch": batch_id, "actor": user},
+            )
