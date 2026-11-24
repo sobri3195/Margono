@@ -76,7 +76,7 @@ margono/
 - [x] **T-001 (P0, E00)** Freeze allowed use cases and explicit non-goals in docs and API contracts. **DoD:** policy assertions appear in PRD, sample consent, test plans, and review checklist. [FR-028] Policy and verification: `docs/acceptable-use.md`.
 - [x] **T-002 (P0, E00)** Write preliminary data flow and threat model. **DoD:** trust boundaries for browser, desktop, workers, cloud, mobile and external APIs documented. [NFR-security] Preliminary model: `docs/simulation.md`.
 - [x] **T-003 (P0, E01)** Initialize monorepo structure and root documentation. **DoD:** reproducible local environment and a readme that links source docs. Local setup and validation: `README.md`.
-- [ ] **T-004 (P0, E01)** Establish tooling: dependency locks, formatting, type checking, unit tests, secrets scanning, CI. **DoD:** clean baseline CI passes.
+- [ ] **T-004 (P0, E01)** Establish tooling: dependency locks, formatting, type checking, unit tests, secrets scanning, CI. **DoD:** clean baseline CI passes. Local verification: `docs/development-checks.md`. GitHub Actions verification of the updated workflow is pending.
 - [x] **T-005 (P0, E01)** Design data schema and migrations for users, roles, cases, consent, import rows, jobs and audit. **DoD:** migrations run on clean DB and test DB. [FR-010, FR-012] Migration and integration tests: `docs/database.md`.
 - [x] **T-006 (P0, E01)** Define API contract conventions, error schema, UTC timestamps, correlation ID, idempotency key. **DoD:** example request/response fixtures documented. Contracts and examples: `docs/api-contract.md`.
 - [x] **T-007 (P0, E10)** Generate 20 fixed synthetic case fixtures and seeded variation generator. **DoD:** identical seed reproduces identical scenarios. [FR-064] Catalog and seed tests: `services/api/tests/test_simulation.py`.
@@ -95,7 +95,7 @@ margono/
 
 - [ ] **T-015 (P0, E03)** Create Case CRUD with unique Case ID, purpose and status. **DoD:** create/open/close on synthetic cases, audit emitted. [FR-010]
 - [ ] **T-016 (P0, E03)** Add XLSX/CSV upload with file size, encoding, type and malware-safe validation. **DoD:** malformed and oversized files rejected safely. [FR-020]
-- [ ] **T-017 (P0, E03)** Build Guided Wizard, column mapping and row preview. **DoD:** user chooses `Nama` column and confirms import. [FR-021]
+- [x] **T-017 (P0, E03)** Build Guided Wizard, column mapping and row preview. **DoD:** user chooses `Nama` column and confirms import. [FR-021] CSV column picker and confirmation covered in `apps/web/tests/imports.spec.ts`.
 - [ ] **T-018 (P0, E03)** Implement duplicate row grouping without identity merge. **DoD:** same-name cases remain distinct unless human explicitly resolves. [FR-022]
 - [ ] **T-019 (P0, E04)** Define adapter interface for public cyber indicators with simulated data. **DoD:** fixture adapter returns source/ref, timestamp, IOC and result state. [FR-023]
 - [ ] **T-020 (P0, E04)** Build analyst review queue and evidence checklist. **DoD:** Verified/Inconclusive/Rejected supported; no automatic person inference. [FR-025, FR-026]

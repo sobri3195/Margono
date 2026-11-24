@@ -1,48 +1,14 @@
-from os import environ
-from pathlib import Path
-from uuid import UUID, uuid4
+from uuid import UUID
 
 import pytest
 import sqlalchemy as sa
 from alembic import command
-from alembic.config import Config
 from fastapi.testclient import TestClient
-from sqlalchemy.engine import make_url
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.schema import CreateSchema, DropSchema
 
 from margono_api.main import app
 
 pytestmark = pytest.mark.postgres
-API_DIR = Path(__file__).resolve().parents[1]
-
-
-@pytest.fixture
-def isolated_database(monkeypatch):
-    test_url = environ.get("MARGONO_TEST_DATABASE_URL")
-    if not test_url:
-        pytest.skip("Set MARGONO_TEST_DATABASE_URL to run PostgreSQL migration tests.")
-
-    schema = f"test_{uuid4().hex}"
-    url = make_url(test_url)
-    admin_engine = sa.create_engine(url)
-    with admin_engine.begin() as connection:
-        connection.execute(CreateSchema(schema))
-
-    scoped_url = url.update_query_dict({"options": f"-csearch_path={schema}"})
-    scoped_engine = sa.create_engine(scoped_url)
-    monkeypatch.setenv(
-        "MARGONO_DATABASE_URL", scoped_url.render_as_string(hide_password=False)
-    )
-    try:
-        yield Config(str(API_DIR / "alembic.ini")), scoped_engine, schema
-    finally:
-        scoped_engine.dispose()
-        try:
-            with admin_engine.begin() as connection:
-                connection.execute(DropSchema(schema, cascade=True))
-        finally:
-            admin_engine.dispose()
 
 
 def test_migration_up_down_up(isolated_database):
@@ -55,13 +21,16 @@ def test_migration_up_down_up(isolated_database):
         "alembic_version",
         "audit_events",
         "cases",
+        "consent_decisions",
         "consent_records",
         "device_sessions",
+        "import_evidence",
         "import_rows",
         "imports",
         "jobs",
         "roles",
         "user_roles",
+        "user_sessions",
         "users",
     }
     with engine.connect() as connection:
@@ -218,6 +187,38 @@ def test_consent_revocation_requires_valid_timestamp(isolated_database):
             == 1
         )
 
+        with (
+            pytest.raises(IntegrityError, match="Invalid consent transition"),
+            connection.begin_nested(),
+        ):
+            connection.execute(
+                sa.text(
+                    "UPDATE consent_records SET status = 'granted', revoked_at = NULL WHERE id = :id"
+                ),
+                {"id": consent_id},
+            )
+        assert set(
+            connection.scalars(sa.text("SELECT status FROM consent_decisions"))
+        ) == {
+            "granted",
+            "revoked",
+        }
+        with (
+            pytest.raises(IntegrityError, match="Consent history cannot be edited"),
+            connection.begin_nested(),
+        ):
+            connection.execute(sa.text("DELETE FROM consent_decisions"))
+        with (
+            pytest.raises(IntegrityError, match="Consent history cannot be edited"),
+            connection.begin_nested(),
+        ):
+            connection.execute(
+                sa.text(
+                    "INSERT INTO consent_decisions (consent_id, status, occurred_at) VALUES (:id, 'declined', now())"
+                ),
+                {"id": consent_id},
+            )
+
 
 def test_readiness_distinguishes_unmigrated_and_migrated_postgres(isolated_database):
     config, _, _ = isolated_database
@@ -231,3 +232,72 @@ def test_readiness_distinguishes_unmigrated_and_migrated_postgres(isolated_datab
         assert after.status_code == 503
         assert after.json()["checks"]["database"] == "ready"
         assert after.json()["pilot"] == "blocked"
+
+
+def test_case_and_import_invariants(isolated_database):
+    config, engine, _ = isolated_database
+    command.upgrade(config, "head")
+    with engine.begin() as connection:
+        user = connection.scalar(
+            sa.text("INSERT INTO users (username) VALUES ('sample') RETURNING id")
+        )
+        case_sql = sa.text(
+            "INSERT INTO cases (owner_id, purpose, scope) "
+            "VALUES (:user, :purpose, :scope) RETURNING id"
+        )
+        for purpose, scope in [("", "Simulation"), ("Simulation", "\t\n")]:
+            with (
+                pytest.raises(IntegrityError, match="ck_cases_nonblank_purpose_scope"),
+                connection.begin_nested(),
+            ):
+                connection.execute(
+                    case_sql, dict(user=user, purpose=purpose, scope=scope)
+                )
+        case = connection.scalar(
+            case_sql, dict(user=user, purpose="Purpose", scope="Scope")
+        )
+        batch = connection.scalar(
+            sa.text(
+                "INSERT INTO imports (case_id, submitted_by_id, source_ref) "
+                "VALUES (:case, :user, 'synthetic') RETURNING id"
+            ),
+            dict(case=case, user=user),
+        )
+        row = sa.text(
+            "INSERT INTO import_rows (import_id, row_number, reference_label, status) "
+            "VALUES (:batch, 1, :label, :status)"
+        )
+        for label in (None, " ", "\t"):
+            with (
+                pytest.raises(IntegrityError, match="ck_import_rows_valid_label"),
+                connection.begin_nested(),
+            ):
+                connection.execute(row, dict(batch=batch, label=label, status="valid"))
+        connection.execute(row, dict(batch=batch, label=None, status="invalid"))
+
+
+def test_upgrade_requires_review_of_invalid_legacy_records(isolated_database):
+    config, engine, _ = isolated_database
+    command.upgrade(config, "0001_operational_schema")
+    with engine.begin() as db:
+        db.execute(
+            sa.text("""
+            WITH owner AS (INSERT INTO users (username) VALUES ('legacy') RETURNING id)
+            INSERT INTO cases (owner_id, purpose, scope) SELECT id, '', 'Fixture' FROM owner
+        """)
+        )
+    with pytest.raises(IntegrityError, match="ck_cases_nonblank_purpose_scope"):
+        command.upgrade(config, "head")
+    with engine.begin() as db:
+        assert db.scalar(sa.text("SELECT purpose FROM cases")) == ""
+        assert (
+            db.scalar(sa.text("SELECT version_num FROM alembic_version"))
+            == "0001_operational_schema"
+        )
+        db.execute(sa.text("UPDATE cases SET purpose = 'Reviewed synthetic example'"))
+    command.upgrade(config, "head")
+    with engine.connect() as db:
+        assert (
+            db.scalar(sa.text("SELECT version_num FROM alembic_version"))
+            == "0004_csv_evidence"
+        )

@@ -1,6 +1,6 @@
 # Kesiapan operasional dan pilot
 
-Build ini beroperasi dalam mode `simulation`, baik jika `MARGONO_MODE` belum ditetapkan maupun jika nilainya `simulation`. Startup dengan nilai lain, termasuk `pilot` dan `production`, gagal. Katalog demo dan API baca-saja bisa berjalan dengan fixture sintetis tanpa database.
+Build ini beroperasi dalam mode `simulation`, baik jika `MARGONO_MODE` belum ditetapkan maupun jika nilainya `simulation`. Startup dengan nilai lain, termasuk `pilot` dan `production`, gagal. Katalog demo bisa berjalan dengan fixture sintetis tanpa database. Kasus dan impor lokal memakai database serta akun operator latihan.
 
 ## Memeriksa layanan
 
