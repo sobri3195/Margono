@@ -13,19 +13,20 @@ from pydantic import BaseModel, BeforeValidator, Field, StringConstraints
 from sqlalchemy import text
 from sqlalchemy.engine import Connection, RowMapping
 
-from .csv_imports import (
-    CsvColumns,
-    CsvContent,
-    CsvInput,
-    CsvPreview,
-    csv_reader,
-    preview_csv,
-    read_columns,
-)
 from .database import database_transaction, open_database
 from .errors import api_error
 from .fixtures import CATALOG
 from .passwords import verify_password
+from .tabular_imports import (
+    ImportColumns,
+    ImportContent,
+    ImportInput,
+    ImportPreview,
+    open_rows,
+    original_bytes,
+    preview_import_rows,
+    read_columns,
+)
 
 
 def private_response(response: Response) -> None:
@@ -227,7 +228,10 @@ def case_condition(user: Operator) -> str:
     if "supervisor" in user.roles:
         return "TRUE"
     if CASE_OPERATORS & user.roles:
-        return "owner_id = :owner"
+        return (
+            "owner_id = :owner OR EXISTS (SELECT 1 FROM case_collaborators "
+            "WHERE case_id = cases.id AND user_id = :owner)"
+        )
     raise api_error(403, "case_access_denied", "This role cannot access cases.")
 
 
@@ -409,6 +413,7 @@ class ImportSummary(ImportCounts):
     selected_column: str | None
     sha256: str | None
     submitted_by_id: UUID
+    source_format: str
 
 
 class ImportPage(BaseModel):
@@ -417,7 +422,7 @@ class ImportPage(BaseModel):
 
 
 IMPORT_SUMMARY = """
-    SELECT i.id, i.created_at, i.selected_column, i.submitted_by_id, e.sha256,
+    SELECT i.id, i.created_at, i.selected_column, i.submitted_by_id, i.source_format, e.sha256,
            stats.row_count, stats.valid_count, stats.invalid_count
     FROM imports i
     LEFT JOIN import_evidence e ON e.import_id = i.id
@@ -485,34 +490,35 @@ def list_imports(
 @router.post("/cases/{case_id}/imports/columns")
 def import_columns(
     case_id: UUID,
-    payload: CsvContent,
+    payload: ImportContent,
     db: Database,
     user: CurrentOperator,
-) -> CsvColumns:
+) -> ImportColumns:
     require_import_access(db, user, case_id)
-    _, parser = csv_reader(payload.content)
-    return CsvColumns(columns=read_columns(parser))
+    with open_rows(payload, original_bytes(payload)) as parser:
+        return ImportColumns(columns=read_columns(parser))
 
 
 @router.post("/cases/{case_id}/imports/preview")
 def preview_import(
-    case_id: UUID, payload: CsvInput, db: Database, user: CurrentOperator
-) -> CsvPreview:
+    case_id: UUID, payload: ImportInput, db: Database, user: CurrentOperator
+) -> ImportPreview:
     require_import_access(db, user, case_id)
-    return preview_csv(payload)[1]
+    return preview_import_rows(payload, original_bytes(payload))
 
 
 @router.post("/cases/{case_id}/imports", status_code=201)
 def confirm_import(
     case_id: UUID,
-    payload: CsvInput,
+    payload: ImportInput,
     request: Request,
     db: Database,
     user: CurrentOperator,
     key: IdempotencyKey,
 ) -> ImportResult:
     case = require_import_access(db, user, case_id, lock=True)
-    digest = sha256(payload.content.encode()).hexdigest()
+    content = original_bytes(payload)
+    digest = sha256(content).hexdigest()
     prior = (
         db.execute(
             text(IMPORT_SUMMARY + " AND i.idempotency_key = :key"),
@@ -522,7 +528,11 @@ def confirm_import(
         .one_or_none()
     )
     if prior is not None:
-        if (prior.sha256, prior.selected_column) != (digest, payload.column):
+        if (prior.sha256, prior.selected_column, prior.source_format) != (
+            digest,
+            payload.column,
+            payload.format,
+        ):
             raise api_error(
                 409, "idempotency_conflict", "This key belongs to a different import."
             )
@@ -530,17 +540,18 @@ def confirm_import(
     if case.status != "open":
         raise api_error(409, "case_closed", "Reopen the case before importing.")
 
-    content, preview = preview_csv(payload)
+    preview = preview_import_rows(payload, content)
     batch = db.scalar(
         text("""
-        INSERT INTO imports (case_id, submitted_by_id, source_ref, selected_column, idempotency_key)
-        VALUES (:case, :user, :source, :column, :key) RETURNING id
+        INSERT INTO imports (case_id, submitted_by_id, source_ref, selected_column, idempotency_key, source_format)
+        VALUES (:case, :user, :source, :column, :key, :format) RETURNING id
     """),
         {
             "case": case_id,
             "user": user.id,
             "source": f"sha256:{digest}",
             "column": payload.column,
+            "format": payload.format,
             "key": key,
         },
     )
@@ -580,7 +591,7 @@ def import_evidence(
     visible_case(db, user, case_id)
     row = db.execute(
         text("""
-        SELECT e.content, e.sha256 FROM import_evidence e JOIN imports i ON i.id=e.import_id
+        SELECT e.content, e.sha256, i.source_format FROM import_evidence e JOIN imports i ON i.id=e.import_id
         WHERE i.case_id=:case AND e.import_id=:id
     """),
         {"case": case_id, "id": import_id},
@@ -594,11 +605,12 @@ def import_evidence(
     write_audit(
         db, request, user.id, "import.evidence_served", case_id, import_id=import_id
     )
+    extension = "xlsx" if row.source_format == "xlsx" else "csv"
     return Response(
         row.content,
         media_type="application/octet-stream",
         headers={
-            "Content-Disposition": 'attachment; filename="original.csv.bin"',
+            "Content-Disposition": f'attachment; filename="original.{extension}.bin"',
             "Cache-Control": "no-store",
             "X-Content-SHA256": row.sha256,
         },

@@ -10,12 +10,14 @@ from sqlalchemy import create_engine, pool, text
 from sqlalchemy.engine import make_url
 from sqlalchemy.exc import SQLAlchemyError
 
+from .synthetic_worker import WORKER_TIMEOUT_SECONDS
+
 DatabaseStatus = Literal["ready", "not_configured", "unavailable", "migration_required"]
 
 
 class Dependencies(BaseModel):
     database: DatabaseStatus
-    worker: Literal["not_implemented"] = "not_implemented"
+    worker: Literal["active", "not_observed", "unavailable"] = "unavailable"
     sync: Literal["not_implemented"] = "not_implemented"
 
 
@@ -32,15 +34,15 @@ def expected_heads() -> frozenset[str]:
     return frozenset(ScriptDirectory.from_config(config).get_heads())
 
 
-def database_status() -> DatabaseStatus:
+def dependency_status() -> Dependencies:
     raw_url = environ.get("MARGONO_DATABASE_URL")
     if not raw_url:
-        return "not_configured"
+        return Dependencies(database="not_configured")
 
     try:
         url = make_url(raw_url)
         if url.drivername != "postgresql+psycopg":
-            return "unavailable"
+            return Dependencies(database="unavailable")
 
         engine = create_engine(
             url,
@@ -53,13 +55,22 @@ def database_status() -> DatabaseStatus:
                 text("SELECT to_regclass('alembic_version')")
             )
             if version_table is None:
-                return "migration_required"
+                return Dependencies(database="migration_required")
             versions = connection.scalars(
                 text("SELECT version_num FROM alembic_version")
             )
             if frozenset(versions) != expected_heads():
-                return "migration_required"
+                return Dependencies(database="migration_required")
+            active = connection.scalar(
+                text("""
+                SELECT EXISTS (
+                    SELECT 1 FROM procrastinate_workers
+                    WHERE last_heartbeat > now() - (:timeout * interval '1 second')
+                )
+            """),
+                {"timeout": WORKER_TIMEOUT_SECONDS},
+            )
     except (SQLAlchemyError, ValueError):
-        return "unavailable"
+        return Dependencies(database="unavailable")
 
-    return "ready"
+    return Dependencies(database="ready", worker="active" if active else "not_observed")

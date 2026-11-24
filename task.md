@@ -94,23 +94,23 @@ margono/
 ### Month 2 - Sprint 3: Case + guided import + analyst review
 
 - [ ] **T-015 (P0, E03)** Create Case CRUD with unique Case ID, purpose and status. **DoD:** create/open/close on synthetic cases, audit emitted. [FR-010]
-- [ ] **T-016 (P0, E03)** Add XLSX/CSV upload with file size, encoding, type and malware-safe validation. **DoD:** malformed and oversized files rejected safely. [FR-020]
+- [x] **T-016 (P0, E03)** Add XLSX/CSV upload with file size, encoding, type and malware-safe validation. **DoD:** malformed and oversized files rejected safely. [FR-020]
 - [x] **T-017 (P0, E03)** Build Guided Wizard, column mapping and row preview. **DoD:** user chooses `Nama` column and confirms import. [FR-021] CSV column picker and confirmation covered in `apps/web/tests/imports.spec.ts`.
 - [ ] **T-018 (P0, E03)** Implement duplicate row grouping without identity merge. **DoD:** same-name cases remain distinct unless human explicitly resolves. [FR-022]
-- [ ] **T-019 (P0, E04)** Define adapter interface for public cyber indicators with simulated data. **DoD:** fixture adapter returns source/ref, timestamp, IOC and result state. [FR-023]
-- [ ] **T-020 (P0, E04)** Build analyst review queue and evidence checklist. **DoD:** Verified/Inconclusive/Rejected supported; no automatic person inference. [FR-025, FR-026]
+- [x] **T-019 (P0, E04)** Define adapter interface for public cyber indicators with simulated data. **DoD:** fixture adapter returns source/ref, timestamp, IOC and result state. [FR-023]
+- [x] **T-020 (P0, E04)** Build analyst review queue and evidence checklist. **DoD:** Verified/Inconclusive/Rejected supported; no automatic person inference. [FR-025, FR-026]
 - [ ] **T-021 (P0, E10)** Add tests against same-name false matches, malicious file names/links and source poisoning. **DoD:** results never auto-linked to personal profile. [FR-028]
 
 ### Month 2 - Sprint 4: Desktop mock, queue, shared evidence, reports
 
 - [ ] **T-022 (P0, E05)** Scaffold Tauri app with common UI theme and local SQLite persistence. **DoD:** signed-test build launches on Windows. [FR-030]
-- [ ] **T-023 (P0, E05)** Implement explicit examination consent flow and withdrawal in mock mode. **DoD:** scope is visible and scanning blocked without consent. [FR-012]
-- [ ] **T-024 (P0, E05)** Build Android/iPhone capability matrix and mock adapters. **DoD:** unsupported cases displayed as unavailable, not safe. [FR-031, FR-035]
+- [x] **T-023 (P0, E05)** Implement explicit examination consent flow and withdrawal in mock mode. **DoD:** scope is visible and scanning blocked without consent. [FR-012] Verified in the web simulation. Desktop launch remains in T-022.
+- [x] **T-024 (P0, E05)** Build Android/iPhone capability matrix and mock adapters. **DoD:** unsupported cases displayed as unavailable, not safe. [FR-031, FR-035]
 - [ ] **T-025 (P0, E06)** Integrate PostgreSQL Procrastinate worker and local SQLite persistent queue. **DoD:** restart preserves queued jobs. [FR-040]
 - [ ] **T-026 (P0, E06)** Implement pause/resume/cancel/retry, checkpoints, bounded backoff and idempotency. **DoD:** duplicate execution does not duplicate evidence. [FR-041, FR-042]
 - [ ] **T-027 (P0, E06)** Build Advanced Monitoring UI. **DoD:** status API, job logs and progress on synthetic workload. [FR-043]
 - [ ] **T-028 (P0, E07)** Build immutable evidence reference and SHA-256 manifest schema. **DoD:** file hash validated at ingest and download. [FR-011]
-- [ ] **T-029 (P0, E07)** Add Executive and Technical report templates using synthetic cases. **DoD:** both reports share Case ID and differ by authorized content. [FR-060]
+- [x] **T-029 (P0, E07)** Add Executive and Technical report templates using synthetic cases. **DoD:** both reports share Case ID and differ by authorized content. [FR-060]
 - [ ] **T-030 (P0, E10)** E2E smoke test of portal -> import -> mock findings -> mock USB -> case -> reports. **DoD:** 20 fixture cases complete. [G-01]
 
 ### Month 3 - Sprint 5: Security foundation

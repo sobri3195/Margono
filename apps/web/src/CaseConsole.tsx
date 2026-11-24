@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react';
 import { isUuid } from './api';
+import { CaseDevices } from './CaseDevices';
 import { CaseImports } from './CaseImports';
+import { CaseWorkflow, PortalJobs } from './CaseWorkflow';
 import { isTimestamp, type SyntheticCase } from './contracts';
 import { formatTimestamp, rememberSelection, selectionUrl } from './display';
 import { isObject, operatorResponse, request, RequestError, type Session } from './operatorApi';
@@ -43,6 +45,7 @@ export function CaseConsole({ fixtures }: { fixtures: SyntheticCase[] }) {
   const [issueId, setIssueId] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const selected = selectedId ? cases.find((item) => item.id === selectedId) : cases[0];
+  const deviceCase = fixtures.some((fixture) => fixture.case_id === selected?.synthetic_fixture_id && fixture.workspace === 'usb');
 
   useEffect(() => {
     function handlePop() {
@@ -240,12 +243,17 @@ export function CaseConsole({ fixtures }: { fixtures: SyntheticCase[] }) {
                 })}>{selected.status === 'open' ? 'Tutup kasus' : 'Buka kembali kasus'}</button>
               )}
               <CaseImports
-                key={selected.id}
+                key={`imports:${selected.id}`}
                 caseId={selected.id}
                 session={session}
                 canImport={session.roles.includes('osint_analyst') && selected.owner_id === session.userId && selected.status === 'open'}
                 onSessionExpired={expireSession}
               />
+              {deviceCase &&
+                <CaseDevices key={`devices:${selected.id}`} caseId={selected.id} open={selected.status === 'open'}
+                  session={session} onSessionExpired={expireSession} />}
+              <CaseWorkflow key={`workflow:${selected.id}`} deviceCase={deviceCase} caseId={selected.id} open={selected.status === 'open'}
+                session={session} onSessionExpired={expireSession} />
             </>
           ) : cases.length === 0 && <p>Belum ada kasus yang dapat Anda akses.</p>}
         </fieldset>

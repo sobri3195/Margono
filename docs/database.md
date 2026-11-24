@@ -38,4 +38,4 @@ export MARGONO_TEST_DATABASE_URL="${MARGONO_DATABASE_URL%/*}/margono_test"
 
 Revisi integritas memvalidasi tujuan dan ruang lingkup kasus, label baris impor valid, dan keputusan consent. Jika ada tujuan atau ruang lingkup kosong, atau status impor valid tanpa label, migrasi berhenti dan transaksi dibatalkan. Tinjau dan koreksi data dari sumber yang sah sebelum menjalankan ulang migrasi. Data historis consent hanya disalin sesuai keputusan terakhir yang tersimpan. Riwayat baru mencatat keputusan awal dan pencabutan, tanpa perubahan status kembali ke persetujuan.
 
-Lihat [alur kasus sintetis](synthetic-cases.md) untuk login lokal dan impor. Worker, penghentian job berdasarkan consent, dan audit bertanda tangan masih terbuka.
+Migrasi `0006_synthetic_workflow` memasang tabel dan fungsi Procrastinate 3.12, kolaborasi kasus, serta bukti temuan dan mock USB. Lihat [alur kasus sintetis](synthetic-cases.md) untuk menjalankan worker, menguji consent, dan membuka laporan. Audit bertanda tangan memerlukan kontrol pilot.

@@ -22,7 +22,7 @@ test.beforeEach(async ({ page }) => {
     status: 503,
     json: {
       mode: 'SYNTHETIC', status: 'not_ready', pilot: 'blocked',
-      checks: { database: 'ready', worker: 'not_implemented', sync: 'not_implemented' },
+      checks: { database: 'ready', worker: 'not_observed', sync: 'not_implemented' },
     },
   }));
   await page.route('**/api/v1/sessions', (route) => route.fulfill({
@@ -133,4 +133,75 @@ test('returns to sign-in when import history reports an expired session', async 
   await expect(page.getByRole('alert')).toHaveText('Sesi telah berakhir. Silakan masuk kembali.');
   await expect(page.getByText(correlationId)).toBeVisible();
   await expect(page.getByRole('button', { name: 'Masuk' })).toBeVisible();
+});
+
+test('reviews a source job and opens both reports from the same saved case', async ({ page }) => {
+  const job = '6515b80b-9a75-4816-9315-24b96b4dad9c';
+  const finding = '7515b80b-9a75-4816-9315-24b96b4dad9c';
+  let queued = false;
+  let verified = false;
+  await page.route('**/imports', (route) => route.fulfill({
+    json: { items: [summary], next_cursor: null },
+  }));
+  await page.route(`**/cases/${a}/imports/${batch}/details`, (route) => route.fulfill({
+    json: {
+      rows: [{ row_number: 2, reference_label: 'Label fixture', status: 'valid', duplicate: false }],
+      events: [{ action: 'import.confirmed', occurred_at: timestamp, correlation_id: finding }],
+    },
+  }));
+  function jobData() {
+    return {
+      id: job, case_id: a, import_id: batch, kind: 'synthetic_source',
+      status: 'completed', attempts: 1, created_at: timestamp, failure_code: null, scheduled_at: null, review_pending: !verified,
+    };
+  }
+  function findingData() {
+    return {
+      id: finding, severity: 'low', threat_status: 'suspected',
+      verification: verified ? 'verified' : 'pending',
+      evidence_sha256: 'b'.repeat(64), review_note: verified ? 'Bukti dan batasan diperiksa' : null,
+      evidence: {
+        source_ref: 'SRC-FIXTURE', indicator: 'margono.test', observed_at: timestamp,
+        limitation: 'Simulasi', import_id: batch, import_sha256: 'a'.repeat(64),
+      },
+    };
+  }
+  await page.route(`**/cases/${a}/imports/${batch}/jobs`, (route) => {
+    expect(route.request().headers()['idempotency-key']).toBe(`source:${batch}`);
+    queued = true;
+    return route.fulfill({ status: 201, json: jobData() });
+  });
+  await page.route(`**/cases/${a}/jobs`, (route) => route.fulfill({ json: queued ? [jobData()] : [] }));
+  await page.route(`**/cases/${a}/findings`, (route) => route.fulfill({ json: queued ? [findingData()] : [] }));
+  await page.route(`**/cases/${a}/collaborators`, (route) => route.fulfill({ json: [] }));
+  await page.route(`**/cases/${a}/findings/${finding}/review`, (route) => {
+    expect(route.request().postDataJSON()).toEqual({
+      verification: 'verified', note: 'Bukti dan batasan diperiksa', expected: 'pending',
+    });
+    verified = true;
+    return route.fulfill({ json: findingData() });
+  });
+  for (const template of ['executive', 'technical']) {
+    await page.route(`**/cases/${a}/reports/${template}`, (route) => route.fulfill({
+      json: { mode: 'SYNTHETIC', template, case_id: a },
+    }));
+  }
+
+  await page.goto(`/?saved=${a}`);
+  await page.getByLabel('Nama pengguna').fill('operator');
+  await page.getByLabel('Kata sandi').fill('synthetic-password');
+  await page.getByRole('button', { name: 'Masuk' }).click();
+  await page.getByRole('button', { name: 'Periksa batch' }).click();
+  await expect(page.getByText('Label fixture', { exact: false })).toBeVisible();
+  await expect(page.getByText('import.confirmed', { exact: false })).toBeVisible();
+  await page.getByRole('button', { name: 'Antrekan sumber sintetis' }).click();
+  await page.getByRole('button', { name: 'Muat aktivitas kasus' }).click();
+  await expect(page.getByText('margono.test', { exact: true })).toBeVisible();
+  await page.getByLabel('Catatan relevansi dan batasan').fill('Bukti dan batasan diperiksa');
+  await page.getByRole('button', { name: 'Simpan keputusan' }).click();
+  await expect(page.getByText('Bukti dan batasan diperiksa')).toBeVisible();
+  for (const name of ['Laporan eksekutif', 'Laporan teknis']) {
+    await page.getByRole('button', { name }).click();
+    await expect(page.getByRole('region', { name })).toContainText(a);
+  }
 });

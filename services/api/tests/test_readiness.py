@@ -24,7 +24,7 @@ def test_liveness_and_catalog_work_without_postgres(monkeypatch):
         "pilot": "blocked",
         "checks": {
             "database": "not_configured",
-            "worker": "not_implemented",
+            "worker": "unavailable",
             "sync": "not_implemented",
         },
     }

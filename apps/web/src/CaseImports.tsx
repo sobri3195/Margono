@@ -6,7 +6,9 @@ import { isObject, operatorResponse, request, RequestError, type Session } from 
 
 type Counts = { row_count: number; valid_count: number; invalid_count: number };
 type Result = Counts & { id: string; sha256: string };
-type Summary = Counts & { id: string; created_at: string; selected_column: string | null; sha256: string | null };
+type ImportFormat = 'csv' | 'xlsx' | 'manual';
+type ImportInput = { content: string; format: ImportFormat };
+type Summary = Counts & { id: string; created_at: string; selected_column: string | null; sha256: string | null; source_format?: ImportFormat };
 type History = { items: Summary[]; next_cursor: string | null };
 type PreviewRow = {
   row_number: number;
@@ -16,10 +18,27 @@ type PreviewRow = {
 };
 type Inspection = {
   caseId: string;
-  payload: { content: string; column: string };
+  payload: ImportInput & { column: string };
   rows: PreviewRow[];
   key: string;
 };
+type BatchDetails = {
+  id: string;
+  rows: Array<{ row_number: number; reference_label: string | null; status: string; duplicate: boolean }>;
+  events: Array<{ action: string; occurred_at: string; correlation_id: string | null }>;
+};
+
+function isBatchRow(value: unknown): value is BatchDetails['rows'][number] {
+  return isObject(value) && typeof value.row_number === 'number'
+    && (value.reference_label === null || typeof value.reference_label === 'string')
+    && typeof value.status === 'string' && typeof value.duplicate === 'boolean';
+}
+
+function isBatchEvent(value: unknown): value is BatchDetails['events'][number] {
+  return isObject(value) && typeof value.action === 'string' && isTimestamp(value.occurred_at)
+    && (value.correlation_id === null || isUuid(value.correlation_id));
+}
+
 type Issue = { message: string; correlationId?: string | null };
 
 function isCounts(value: unknown): value is Counts {
@@ -34,7 +53,9 @@ function isResult(value: unknown): value is Result {
 function isSummary(value: unknown): value is Summary {
   return isObject(value) && isUuid(value.id) && isTimestamp(value.created_at)
     && (value.selected_column === null || typeof value.selected_column === 'string')
-    && (value.sha256 === null || typeof value.sha256 === 'string') && isCounts(value);
+    && (value.sha256 === null || typeof value.sha256 === 'string')
+    && (value.source_format === undefined || value.source_format === 'csv'
+      || value.source_format === 'xlsx' || value.source_format === 'manual') && isCounts(value);
 }
 
 function isPreviewRow(value: unknown): value is PreviewRow {
@@ -54,7 +75,7 @@ async function loadHistory(path: string, session: Session, signal: AbortSignal):
 
 function importIssue(error: unknown, fallback: string): Issue {
   if (!(error instanceof RequestError)) return { message: fallback };
-  const message = error.status === 422 ? 'Periksa format CSV atau pilihan kolom.'
+  const message = error.status === 422 ? 'Periksa format impor atau pilihan kolom.'
     : error.status === 409 ? 'Impor tidak dapat diproses untuk status kasus atau kunci ini.' : fallback;
   return { message, correlationId: error.correlationId };
 }
@@ -72,10 +93,13 @@ export function CaseImports({ caseId, session, canImport, onSessionExpired }: {
 }) {
   const path = `/cases/${caseId}/imports`;
   const lifetime = useRef<AbortController>(null);
-  const [file, setFile] = useState<{ content: string; columns: string[] }>();
+  const [file, setFile] = useState<ImportInput & { columns: string[] }>();
+  const [manual, setManual] = useState('');
   const [column, setColumn] = useState('');
   const [inspection, setInspection] = useState<Inspection>();
   const [result, setResult] = useState<Counts>();
+  const [details, setDetails] = useState<BatchDetails>();
+  const [submittedJobs, setSubmittedJobs] = useState<Record<string, string>>({});
   const [issue, setIssue] = useState<Issue>();
   const [busy, setBusy] = useState(false);
   const [history, setHistory] = useState<History>();
@@ -118,7 +142,7 @@ export function CaseImports({ caseId, session, canImport, onSessionExpired }: {
     }
   }
 
-  function chooseFile(event: ChangeEvent<HTMLInputElement>) {
+  function chooseFile(event: ChangeEvent<HTMLInputElement>, format: 'csv' | 'xlsx') {
     const selected = event.target.files?.[0];
     setFile(undefined);
     setColumn('');
@@ -127,14 +151,18 @@ export function CaseImports({ caseId, session, canImport, onSessionExpired }: {
     setIssue(undefined);
     if (!selected) return;
     if (!selected.size || selected.size > 65_536) {
-      setIssue({ message: 'Pilih CSV UTF-8 dengan ukuran hingga 64 KiB.' });
+      setIssue({ message: 'Pilih CSV UTF-8 atau XLSX dengan ukuran hingga 64 KiB.' });
       return;
     }
     void perform(async (signal) => {
-      const content = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(await selected.arrayBuffer());
+      const bytes = new Uint8Array(await selected.arrayBuffer());
+      const content = format === 'csv'
+        ? new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes)
+        : btoa(Array.from(bytes, (byte) => String.fromCharCode(byte)).join(''));
+      const payload: ImportInput = { content, format };
       signal.throwIfAborted();
       const data = await request(`${path}/columns`, {
-        method: 'POST', body: JSON.stringify({ content }), signal,
+        method: 'POST', body: JSON.stringify(payload), signal,
       }, session);
       signal.throwIfAborted();
       if (!isObject(data) || !Array.isArray(data.columns) || !data.columns.every((value) => typeof value === 'string')) {
@@ -142,17 +170,25 @@ export function CaseImports({ caseId, session, canImport, onSessionExpired }: {
       }
       const columns = data.columns.filter((name: string) => name.length <= 128);
       if (!columns.length) throw new Error('No selectable column');
-      setFile({ content, columns });
+      setFile({ ...payload, columns });
       setColumn(columns.includes('Nama') ? 'Nama' : columns[0]);
-    }, 'Kolom gagal dibaca. Pilih CSV UTF-8 dengan header yang valid.');
+    }, 'Kolom gagal dibaca. Pilih lembar kerja dengan header yang valid.');
   }
 
   function preview(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (!file || !column) return;
+    if (file && column) previewPayload({ content: file.content, format: file.format, column });
+  }
+
+  function previewManual(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const labels = manual.split(/\r\n|\r|\n/).map((line) => `"${line.replaceAll('"', '""')}"`);
+    previewPayload({ content: ['Nama', ...labels].join('\n'), column: 'Nama', format: 'manual' });
+  }
+
+  function previewPayload(payload: Inspection['payload']) {
     setInspection(undefined);
     setResult(undefined);
-    const payload = { content: file.content, column };
     void perform(async (signal) => {
       const data = await request(`${path}/preview`, { method: 'POST', body: JSON.stringify(payload), signal }, session);
       signal.throwIfAborted();
@@ -160,7 +196,7 @@ export function CaseImports({ caseId, session, canImport, onSessionExpired }: {
         throw new Error('Unexpected preview response');
       }
       setInspection({ caseId, payload, rows: data.rows, key: crypto.randomUUID() });
-    }, 'Pratinjau CSV gagal dimuat.');
+    }, 'Pratinjau impor gagal dimuat.');
   }
 
   function confirm() {
@@ -192,7 +228,32 @@ export function CaseImports({ caseId, session, canImport, onSessionExpired }: {
     }, 'Halaman riwayat berikutnya gagal dimuat.');
   }
 
-  function download(id: string) {
+  function readBatch(id: string) {
+    setDetails(undefined);
+    void perform(async (signal) => {
+      const data = await request(`${path}/${id}/details`, { signal }, session);
+      signal.throwIfAborted();
+      if (!isObject(data) || !Array.isArray(data.rows) || !data.rows.every(isBatchRow)
+          || !Array.isArray(data.events) || !data.events.every(isBatchEvent)) throw new Error('Unexpected import details');
+      setDetails({ id, rows: data.rows, events: data.events });
+    }, 'Rincian batch gagal dimuat.');
+  }
+
+  function queue(id: string) {
+    void perform(async (signal) => {
+      const data = await request(`${path}/${id}/jobs`, {
+        method: 'POST', headers: { 'Idempotency-Key': `source:${id}` }, signal,
+      }, session);
+      signal.throwIfAborted();
+      if (!isObject(data) || !isUuid(data.id) || data.case_id !== caseId || data.import_id !== id) {
+        throw new Error('Unexpected job response');
+      }
+      const jobId = data.id;
+      setSubmittedJobs((previous) => ({ ...previous, [id]: jobId }));
+    }, 'Pekerjaan sumber sintetis gagal ditambahkan.');
+  }
+
+  function download(id: string, format?: ImportFormat) {
     void perform(async (signal) => {
       const response = await operatorResponse(`${path}/${id}/evidence`, { signal }, session);
       const data = await response.blob();
@@ -200,19 +261,21 @@ export function CaseImports({ caseId, session, canImport, onSessionExpired }: {
       const url = URL.createObjectURL(data);
       const link = document.createElement('a');
       link.href = url;
-      link.download = `bukti-${id}.csv.bin`;
+      link.download = `bukti-${id}.${format === 'xlsx' ? 'xlsx' : 'csv'}.bin`;
       link.click();
       window.setTimeout(() => URL.revokeObjectURL(url), 1000);
     }, 'Bukti impor gagal diunduh.');
   }
 
   return (
-    <section aria-label="Impor CSV">
+    <section aria-label="Impor label">
       <fieldset disabled={busy}>
         {issue && <p role="alert">{issue.message} {issue.correlationId && <code>{issue.correlationId}</code>}</p>}
         {canImport && (
+          <>
           <form onSubmit={preview}>
-            <label>CSV sintetis <input type="file" accept=".csv,text/csv" onChange={chooseFile} /></label>
+            <label>CSV sintetis <input type="file" accept=".csv,text/csv" onChange={(event) => chooseFile(event, 'csv')} /></label>
+            <label>XLSX sintetis <input type="file" accept=".xlsx" onChange={(event) => chooseFile(event, 'xlsx')} /></label>
             {file && (
               <label>Kolom label
                 <select value={column} onChange={(event) => {
@@ -224,12 +287,21 @@ export function CaseImports({ caseId, session, canImport, onSessionExpired }: {
                 </select>
               </label>
             )}
-            <button type="submit" disabled={!file}>Pratinjau CSV</button>
+            <button type="submit" disabled={!file}>{file?.format === 'xlsx' ? 'Pratinjau XLSX' : 'Pratinjau CSV'}</button>
           </form>
+          <form onSubmit={previewManual}>
+            <label>Label manual, satu per baris <textarea value={manual} onChange={(event) => {
+              setManual(event.target.value);
+              setInspection(undefined);
+              setResult(undefined);
+            }} rows={3} maxLength={32_000} required /></label>
+            <button type="submit">Pratinjau label manual</button>
+          </form>
+          </>
         )}
         {canImport && visibleInspection && (
           <>
-            <ul aria-label="Pratinjau baris CSV">
+            <ul aria-label="Pratinjau baris impor">
               {visibleInspection.rows.map((row) => (
                 <li key={row.row_number}>
                   {row.row_number} · {row.reference_label ?? 'Label kosong atau tidak valid'} · {row.status === 'valid' ? 'valid' : 'tidak valid'}
@@ -259,13 +331,28 @@ export function CaseImports({ caseId, session, canImport, onSessionExpired }: {
                 {item.sha256 && (
                   <div>
                     SHA-256 <code>{item.sha256}</code>{' '}
-                    <button type="button" onClick={() => download(item.id)}>Unduh bukti</button>
+                    <button type="button" onClick={() => download(item.id, item.source_format)}>Unduh bukti</button>
+                    <button type="button" onClick={() => readBatch(item.id)}>Periksa batch</button>
+                    {canImport && item.valid_count > 0 && !submittedJobs[item.id] &&
+                      <button type="button" onClick={() => queue(item.id)}>Antrekan sumber sintetis</button>}
+                    {submittedJobs[item.id] && <p role="status">Pekerjaan <code>{submittedJobs[item.id]}</code> dapat dilihat pada aktivitas kasus.</p>}
                   </div>
                 )}
               </li>
             ))}
           </ul>
         )}
+        {details && <section aria-label="Rincian batch impor">
+          <h4>Baris impor <code>{details.id}</code></h4>
+          <ul>{details.rows.map((row) => <li key={row.row_number}>
+            {row.row_number} · {row.reference_label ?? 'Label kosong atau tidak valid'} · {row.status}{row.duplicate && ' · Duplikat'}
+          </li>)}</ul>
+          <h4>Audit batch terbaru</h4>
+          <ul>{details.events.map((event, index) => <li key={index}>
+            {event.action} · <time dateTime={event.occurred_at}>{formatTimestamp(event.occurred_at)}</time>
+            {event.correlation_id && <> · <code>{event.correlation_id}</code></>}
+          </li>)}</ul>
+        </section>}
         {history?.next_cursor && <button type="button" onClick={more}>Muat impor sebelumnya</button>}
       </fieldset>
     </section>

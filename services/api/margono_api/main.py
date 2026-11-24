@@ -6,16 +6,19 @@ from os import environ
 from typing import Annotated
 from uuid import uuid4
 
-from fastapi import FastAPI, Query, Request, Response
+from fastapi import Depends, FastAPI, Query, Request, Response
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 from starlette.exceptions import HTTPException
 
+from .devices import router as devices_router
 from .errors import ApiError
 from .fixtures import CATALOG, CaseFixture, Catalog, Variation, generate_variation
+from .operations import private_response
 from .operations import router as operations_router
-from .readiness import Dependencies, Readiness, database_status
+from .readiness import Readiness, dependency_status
+from .workflows import router as workflows_router
 
 
 class PlanQuery(BaseModel):
@@ -44,6 +47,12 @@ app = FastAPI(
     responses={500: {"model": ApiError}},
 )
 app.include_router(operations_router)
+app.include_router(
+    workflows_router, prefix="/api/v1", dependencies=[Depends(private_response)]
+)
+app.include_router(
+    devices_router, prefix="/api/v1", dependencies=[Depends(private_response)]
+)
 CASES_BY_ID = {case.case_id: case for case in CATALOG.cases}
 CORRELATION_HEADER = "X-Correlation-ID"
 logger = getLogger(__name__)
@@ -109,13 +118,13 @@ def health() -> dict[str, str]:
 @app.get("/api/v1/readiness", status_code=503)
 def readiness(request: Request, response: Response) -> Readiness:
     response.headers["Cache-Control"] = "no-store"
-    status = database_status()
-    if status == "unavailable":
+    checks = dependency_status()
+    if checks.database == "unavailable":
         logger.warning(
             "Readiness database unavailable correlation_id=%s",
             request.state.correlation_id,
         )
-    return Readiness(checks=Dependencies(database=status))
+    return Readiness(checks=checks)
 
 
 @app.get("/api/v1/simulation/catalog")

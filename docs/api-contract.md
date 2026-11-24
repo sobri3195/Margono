@@ -37,22 +37,16 @@ Klien menangani kegagalan berdasarkan status HTTP dan `code`. `message` ditujuka
 Endpoint katalog simulasi bersifat baca-saja. Konfirmasi impor memakai kunci wajib. Pembuatan kasus mendukung kunci opsional untuk kompatibilitas klien, dan web selalu mengirim kunci. Aturan berikut berlaku untuk endpoint tulis yang mendeklarasikan idempotensi.
 
 - Endpoint menetapkan apakah `Idempotency-Key` wajib atau opsional. Nilainya 1–128 karakter ASCII dari `A–Z`, `a–z`, `0–9`, `.`, `_`, `:`, atau `-`. Kunci wajib yang hilang atau kunci yang tidak valid menghasilkan `422 invalid_request`.
-- Server memeriksa otorisasi sebelum membaca hasil lama. Ruang lingkup kunci mengikuti operasi dan resource yang dicantumkan pada endpoint. Pembuatan kasus memakai pasangan operator dan kunci. Konfirmasi impor memakai pasangan Case ID dan kunci. Kontrak job yang direncanakan memakai Case ID, jenis job, dan kunci.
-- Server menyimpan fingerprint permintaan dan hasil secara atomik. Pengulangan dengan payload yang sama mengembalikan status dan body asli serta ID korelasi baru. Payload berbeda pada kunci yang sama menghasilkan `409 idempotency_conflict`. Permintaan simultan untuk pembuatan kasus dan konfirmasi impor diserialisasi di database. Retry membaca hasil setelah transaksi awal selesai.
+- Server memeriksa otorisasi sebelum membaca hasil lama. Ruang lingkup kunci mengikuti operasi dan resource yang dicantumkan pada endpoint. Pembuatan kasus memakai pasangan operator dan kunci. Konfirmasi impor memakai pasangan Case ID dan kunci. Job sumber memakai Case ID, jenis job, dan kunci. Sesi perangkat memakai Case ID dan kunci keputusan. Job perangkat hanya dibuat sekali per sesi.
+- Server menyimpan fingerprint permintaan dan hasil secara atomik. Pengulangan dengan payload yang sama mengembalikan ID resource yang sama dan ID korelasi baru. Pembuatan kasus dan konfirmasi impor mengembalikan body asli. Job dan sesi perangkat mengembalikan status resource saat ini. Payload berbeda pada kunci yang sama menghasilkan `409 idempotency_conflict`. Permintaan simultan untuk pembuatan kasus dan konfirmasi impor diserialisasi di database. Retry membaca hasil setelah transaksi awal selesai.
 - Untuk simulasi lokal, receipt pembuatan kasus dan kunci konfirmasi mengikuti umur data pada database. Kebijakan kedaluwarsa produksi masih perlu ditetapkan.
 
-Contoh kontrak untuk pengajuan job sintetis di masa mendatang.
+Contoh pengajuan job sumber sintetis untuk batch yang sudah tersimpan.
 
 ```http
-POST /api/v1/cases/4e4d0207-adb9-4407-8150-fbca2b4f6824/jobs
-Content-Type: application/json
+POST /api/v1/cases/4e4d0207-adb9-4407-8150-fbca2b4f6824/imports/33034875-9e85-4d9b-abcd-956c4f6391fe/jobs
+Authorization: Bearer <token>
 Idempotency-Key: fixture-job-001
-
-{"kind":"source_review"}
 ```
 
-Jika pengajuan pertama menghasilkan HTTP 202, percobaan ulang identik mengembalikan HTTP 202 dan Job ID yang sama dengan contoh di bawah.
-
-```json
-{"job_id":"a37df074-3a3b-4113-bac0-66fd933f9859","status":"queued"}
-```
+Percobaan pertama dan ulang mengembalikan HTTP 201 dan Job ID yang sama pada field `id`.

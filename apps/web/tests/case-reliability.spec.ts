@@ -21,7 +21,7 @@ test.beforeEach(async ({ page }) => {
     status: 503,
     json: {
       mode: 'SYNTHETIC', status: 'not_ready', pilot: 'blocked',
-      checks: { database: 'ready', worker: 'not_implemented', sync: 'not_implemented' },
+      checks: { database: 'ready', worker: 'not_observed', sync: 'not_implemented' },
     },
   }));
   await page.route('**/api/v1/sessions', (route) => route.fulfill({
