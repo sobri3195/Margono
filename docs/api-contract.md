@@ -41,6 +41,8 @@ Endpoint katalog simulasi bersifat baca-saja. Konfirmasi impor memakai kunci waj
 - Server menyimpan fingerprint permintaan dan hasil secara atomik. Pengulangan dengan payload yang sama mengembalikan ID resource yang sama dan ID korelasi baru. Pembuatan kasus dan konfirmasi impor mengembalikan body asli. Job dan sesi perangkat mengembalikan status resource saat ini. Payload berbeda pada kunci yang sama menghasilkan `409 idempotency_conflict`. Permintaan simultan untuk pembuatan kasus dan konfirmasi impor diserialisasi di database. Retry membaca hasil setelah transaksi awal selesai.
 - Untuk simulasi lokal, receipt pembuatan kasus dan kunci konfirmasi mengikuti umur data pada database. Kebijakan kedaluwarsa produksi masih perlu ditetapkan.
 
+`GET /api/v1/cases/creation-receipt` mengembalikan keadaan kasus terbaru yang dibuat dengan kunci tersebut oleh operator. `GET /api/v1/cases/{case_id}/imports/confirmation` mengembalikan hasil konfirmasi milik operator dari riwayat kasus, terlepas dari halaman daftar riwayat. Kedua operasi meminta header `Idempotency-Key` dan sesi yang berwenang. Jika hasil belum tersimpan, responsnya `200` dengan badan JSON `null`.
+
 Contoh pengajuan job sumber sintetis untuk batch yang sudah tersimpan.
 
 ```http

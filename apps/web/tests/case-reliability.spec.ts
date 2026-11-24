@@ -30,32 +30,88 @@ test.beforeEach(async ({ page }) => {
   await page.route('**/imports', (route) => route.fulfill({ json: { items: [], next_cursor: null } }));
 });
 
-test('retries a lost case response with the same key and gives the next creation a new key', async ({ page }) => {
+test('recovers a committed case after reload and login with a read-only receipt lookup', async ({ page }) => {
+  const keys: string[] = [];
+  const closed = { ...template, id: a, status: 'closed', closed_at: '2026-01-01T01:00:00Z' };
+  await page.route('**/api/v1/cases', (route) => {
+    if (route.request().method() === 'GET') return route.fulfill({ json: [] });
+    keys.push(route.request().headers()['idempotency-key']);
+    if (keys.length === 1) return route.abort();
+    return route.fulfill({ status: 201, json: { ...template, id: b } });
+  });
+  await page.route('**/api/v1/cases/creation-receipt', (route) => {
+    expect(route.request().headers()['idempotency-key']).toBe(keys[0]);
+    return route.fulfill({ json: closed });
+  });
+  await page.route(`**/api/v1/cases/${b}`, (route) => route.fulfill({ json: { ...template, id: b } }));
+  await page.goto('/');
+
+  async function login() {
+    await page.getByLabel('Nama pengguna').fill('operator');
+    await page.getByLabel('Kata sandi').fill('synthetic-password');
+    await page.getByRole('button', { name: 'Masuk' }).click();
+  }
+  async function fillCase() {
+    await page.getByLabel('Tujuan').fill('Synthetic test');
+    await page.getByLabel('Ruang lingkup').fill('Fixture');
+  }
+  await login();
+  await fillCase();
+  await page.getByRole('button', { name: 'Buat kasus', exact: true }).click();
+  await expect(page.getByRole('alert')).toHaveText('Operasi gagal. Coba lagi.');
+  await page.reload();
+  await login();
+  await expect(page.getByLabel('Tujuan')).toHaveValue('');
+  await expect(page.getByRole('button', { name: 'Buat kasus', exact: true })).toHaveCount(0);
+  await page.getByRole('button', { name: 'Coba lagi pembuatan kasus' }).click();
+  await expect(page.getByLabel('Kasus tersimpan')).toHaveValue(a);
+  await expect(page.getByText('Ditutup', { exact: true })).toBeVisible();
+  await expect(page.getByLabel('CSV sintetis')).toHaveCount(0);
+  expect(keys).toHaveLength(1);
+  await fillCase();
+  await page.getByRole('button', { name: 'Buat kasus', exact: true }).click();
+  await expect(page.getByLabel('Kasus tersimpan')).toHaveValue(b);
+  expect(keys[1]).not.toBe(keys[0]);
+});
+
+test('retries a missing receipt with the same key and waits for the current case status', async ({ page }) => {
   const keys: string[] = [];
   await page.route('**/api/v1/cases', (route) => {
     if (route.request().method() === 'GET') return route.fulfill({ json: [] });
     keys.push(route.request().headers()['idempotency-key']);
     if (keys.length === 1) return route.abort();
-    return route.fulfill({ status: 201, json: { ...template, id: keys.length === 2 ? a : b } });
+    return route.fulfill({ status: 201, json: { ...template, id: a } });
+  });
+  await page.route('**/api/v1/cases/creation-receipt', (route) => route.fulfill({ json: null }));
+  let release!: () => void;
+  const waitForCase = new Promise<void>((resolve) => { release = resolve; });
+  await page.route(`**/api/v1/cases/${a}`, async (route) => {
+    await waitForCase;
+    return route.fulfill({ json: { ...template, id: a, status: 'closed', closed_at: '2026-01-01T01:00:00Z' } });
   });
   await page.goto('/');
   await page.getByLabel('Nama pengguna').fill('operator');
   await page.getByLabel('Kata sandi').fill('synthetic-password');
   await page.getByRole('button', { name: 'Masuk' }).click();
-  const create = page.getByRole('button', { name: 'Buat kasus' });
   await page.getByLabel('Tujuan').fill('Synthetic test');
   await page.getByLabel('Ruang lingkup').fill('Fixture');
-  await create.click();
-  await expect(page.getByRole('alert')).toHaveText('Operasi gagal. Coba lagi.');
-  await create.click();
-  await expect(page.getByLabel('Kasus tersimpan')).toHaveValue(a);
+  await page.getByRole('button', { name: 'Buat kasus', exact: true }).click();
+  const retry = page.getByRole('button', { name: 'Coba lagi pembuatan kasus' });
+  await expect(retry).toBeEnabled();
+  await page.getByLabel('Ruang lingkup').fill('Other fixture');
+  await retry.click();
+  await expect(page.getByRole('alert')).toHaveText(/Isian berbeda/);
+  expect(keys).toHaveLength(1);
+  await page.getByLabel('Ruang lingkup').fill('Fixture');
+  const started = page.waitForRequest(`**/api/v1/cases/${a}`);
+  await retry.click();
+  await started;
+  await expect(page.getByLabel('CSV sintetis')).toHaveCount(0);
+  release();
+  await expect(page.getByText('Ditutup', { exact: true })).toBeVisible();
+  await expect(page.getByLabel('CSV sintetis')).toHaveCount(0);
   expect(keys[0]).toBeTruthy();
-  expect(keys[0]).toBe(keys[1]);
-  await page.getByLabel('Tujuan').fill('Synthetic test');
-  await page.getByLabel('Ruang lingkup').fill('Fixture');
-  await create.click();
-  await expect(page.getByLabel('Kasus tersimpan')).toHaveValue(b);
-  expect(keys[2]).not.toBe(keys[1]);
+  expect(keys).toEqual([keys[0], keys[0]]);
 });
 
 test('older cases are reachable using the keyboard with the server cursor', async ({ page }) => {

@@ -6,6 +6,7 @@ import { CaseWorkflow, PortalJobs } from './CaseWorkflow';
 import { isTimestamp, type SyntheticCase } from './contracts';
 import { formatTimestamp, rememberSelection, selectionUrl } from './display';
 import { isObject, operatorResponse, request, RequestError, type Session } from './operatorApi';
+import { clearPendingWrite, readPendingWrite, savePendingWrite, writeFingerprint, type PendingWrite } from './pendingWrite';
 
 type Case = {
   id: string; owner_id: string; synthetic_fixture_id: string; purpose: string;
@@ -31,12 +32,14 @@ async function readCasePage(session: Session, before?: string) {
 }
 
 const caseRoles = ['osint_analyst', 'forensic_examiner'];
+const creationStorageKey = (session: Session) => `margono.pending-case:${session.userId}`;
 
 export function CaseConsole({ fixtures }: { fixtures: SyntheticCase[] }) {
   const [session, setSession] = useState<Session>();
   const [cases, setCases] = useState<Case[]>([]);
   const [cursor, setCursor] = useState<string | null>(null);
-  const pendingCreation = useRef<{ body: string; key: string }>(null);
+  const [pendingCreation, setPendingCreation] = useState<PendingWrite>();
+  const currentSession = useRef<Session>(null);
   const casePicker = useRef<HTMLSelectElement>(null);
   const loadMoreButton = useRef<HTMLButtonElement>(null);
   const restorePaginationFocus = useRef(false);
@@ -65,10 +68,11 @@ export function CaseConsole({ fixtures }: { fixtures: SyntheticCase[] }) {
   }, [busy, cursor]);
 
   const clearSession = useCallback(() => {
+    currentSession.current = null;
     setSession(undefined);
     setCases([]);
     setCursor(null);
-    pendingCreation.current = null;
+    setPendingCreation(undefined);
     restorePaginationFocus.current = false;
     setSelectedId('');
   }, []);
@@ -145,6 +149,8 @@ export function CaseConsole({ fixtures }: { fixtures: SyntheticCase[] }) {
           }
         }
       }
+      currentSession.current = next;
+      setPendingCreation(readPendingWrite(creationStorageKey(next)));
       setSession(next);
     });
   }
@@ -153,20 +159,54 @@ export function CaseConsole({ fixtures }: { fixtures: SyntheticCase[] }) {
     event.preventDefault();
     const form = event.currentTarget;
     const fields = new FormData(form);
-    const body = JSON.stringify({
-      fixture_id: fields.get('fixture'), purpose: fields.get('purpose'), scope: fields.get('scope'),
-    });
-    const attempt = pendingCreation.current?.body === body
-      ? pendingCreation.current
-      : { body, key: crypto.randomUUID() };
-    pendingCreation.current = attempt;
+    const purpose = fields.get('purpose');
+    const scope = fields.get('scope');
+    const body = purpose && scope ? JSON.stringify({ fixture_id: fields.get('fixture'), purpose, scope }) : undefined;
+    const storageKey = creationStorageKey(active);
     void perform(async () => {
-      updateCase(await request('/cases', {
-        method: 'POST', body, headers: { 'Idempotency-Key': attempt.key },
-      }, active));
-      pendingCreation.current = null;
+      let attempt = readPendingWrite(storageKey);
+      let current: unknown = null;
+      if (attempt) {
+        current = await request('/cases/creation-receipt', { headers: { 'Idempotency-Key': attempt.key } }, active);
+      }
+      if (currentSession.current !== active) return;
+      if (current === null) {
+        if (!body) {
+          setIssue('Hasil belum tercatat. Pilih fixture dan isi kembali tujuan serta ruang lingkup yang sama untuk mencoba lagi.');
+          return;
+        }
+        const fingerprint = await writeFingerprint(body);
+        if (currentSession.current !== active) return;
+        if (attempt && attempt.fingerprint !== fingerprint) {
+          setIssue('Isian berbeda dari permintaan sebelumnya. Gunakan isian yang sama atau mulai pembuatan baru.');
+          return;
+        }
+        if (!attempt) {
+          attempt = { key: crypto.randomUUID(), fingerprint };
+          savePendingWrite(storageKey, attempt);
+          setPendingCreation(attempt);
+        }
+        const receipt = await request('/cases', {
+          method: 'POST', body, headers: { 'Idempotency-Key': attempt.key },
+        }, active);
+        if (!isCase(receipt)) throw new Error('Unexpected case receipt');
+        current = await request(`/cases/${receipt.id}`, {}, active);
+        if (!isCase(current) || current.id !== receipt.id) throw new Error('Unexpected current case');
+      }
+      if (currentSession.current !== active) return;
+      if (!isCase(current) || current.owner_id !== active.userId || !attempt) throw new Error('Unexpected case recovery');
+      if (!clearPendingWrite(storageKey, attempt)) return;
+      setPendingCreation(undefined);
+      updateCase(current);
       form.reset();
     });
+  }
+
+  function startNewCase(active: Session, pending: PendingWrite) {
+    if (!clearPendingWrite(creationStorageKey(active), pending)) return;
+    setPendingCreation(undefined);
+    setIssue('');
+    setIssueId(null);
   }
 
   function moreCases(active: Session) {
@@ -211,7 +251,13 @@ export function CaseConsole({ fixtures }: { fixtures: SyntheticCase[] }) {
               </label>
               <label>Tujuan <input name="purpose" maxLength={500} required /></label>
               <label>Ruang lingkup <input name="scope" maxLength={500} required /></label>
-              <button type="submit">Buat kasus</button>
+              {pendingCreation ? (
+                <>
+                  <p role="status">Hasil pembuatan sebelumnya belum diketahui. Mulai pembuatan baru hanya jika Anda memang ingin membuat kasus lain.</p>
+                  <button type="submit" formNoValidate>Coba lagi pembuatan kasus</button>
+                  <button type="button" onClick={() => startNewCase(session, pendingCreation)}>Mulai pembuatan baru</button>
+                </>
+              ) : <button type="submit">Buat kasus</button>}
             </form>
           )}
           {cases.length > 0 && (
@@ -246,7 +292,8 @@ export function CaseConsole({ fixtures }: { fixtures: SyntheticCase[] }) {
                 key={`imports:${selected.id}`}
                 caseId={selected.id}
                 session={session}
-                canImport={session.roles.includes('osint_analyst') && selected.owner_id === session.userId && selected.status === 'open'}
+                canManageImports={session.roles.includes('osint_analyst') && selected.owner_id === session.userId}
+                caseOpen={selected.status === 'open'}
                 onSessionExpired={expireSession}
               />
               {deviceCase &&
