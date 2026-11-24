@@ -13,7 +13,10 @@ if database_url.drivername != "postgresql+psycopg":
     raise RuntimeError("MARGONO_DATABASE_URL must use the postgresql+psycopg driver.")
 
 if context.is_offline_mode():
-    context.configure(url=database_url, literal_binds=True)
+    # Generated SQL is consumed by PostgreSQL directly, without DBAPI escaping.
+    context.configure(
+        url=database_url, literal_binds=True, dialect_opts={"paramstyle": "named"}
+    )
     with context.begin_transaction():
         context.run_migrations()
 else:
