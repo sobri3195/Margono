@@ -205,3 +205,98 @@ test('reviews a source job and opens both reports from the same saved case', asy
     await expect(page.getByRole('region', { name })).toContainText(a);
   }
 });
+
+test('restores a committed import from its exact confirmation after changing cases', async ({ page }) => {
+  const nextBatch = '6515b80b-9a75-4816-9315-24b96b4dad9c';
+  const keys: string[] = [];
+  await page.route(`**/cases/${a}/imports`, (route) => {
+    if (route.request().method() === 'POST') {
+      keys.push(route.request().headers()['idempotency-key']);
+      return keys.length === 1 ? route.abort() : route.fulfill({ status: 201, json: { ...summary, id: nextBatch } });
+    }
+    // Other imports can put the original batch beyond the first page.
+    return route.fulfill({ json: { items: [], next_cursor: nextBatch } });
+  });
+  let otherLookups = 0;
+  await page.route(`**/cases/${b}/imports/confirmation`, (route) => {
+    otherLookups++;
+    return route.fulfill({ json: null });
+  });
+  await page.route(`**/cases/${b}/imports`, (route) =>
+    route.fulfill({ json: { items: [], next_cursor: null } }));
+  await page.route(`**/cases/${a}/imports/confirmation`, (route) => {
+    expect(route.request().headers()['idempotency-key']).toBe(keys[0]);
+    return route.fulfill({ json: summary });
+  });
+  await page.route(`**/cases/${a}/imports/preview`, (route) => route.fulfill({
+    json: { rows: [{ row_number: 2, reference_label: 'Fixture label', status: 'valid', duplicate: false }] },
+  }));
+  await page.goto(`/?saved=${a}`);
+  await page.getByLabel('Nama pengguna').fill('operator');
+  await page.getByLabel('Kata sandi').fill('synthetic-password');
+  await page.getByRole('button', { name: 'Masuk' }).click();
+
+  async function preview() {
+    await page.getByLabel('CSV sintetis').setInputFiles({
+      name: 'fixture.csv', mimeType: 'text/csv', buffer: Buffer.from('Unit,Label\nSatu,Fixture label\n'),
+    });
+    await page.getByLabel('Kolom label').selectOption('Label');
+    await page.getByRole('button', { name: 'Pratinjau CSV' }).click();
+    await page.getByRole('button', { name: 'Konfirmasi impor', exact: true }).click();
+  }
+
+  await preview();
+  await expect(page.getByRole('button', { name: 'Coba lagi konfirmasi impor' })).toBeEnabled();
+  const picker = page.getByRole('combobox', { name: 'Kasus tersimpan' });
+  await picker.selectOption(b);
+  await expect(page.getByText('Belum ada impor untuk kasus ini.')).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Coba lagi konfirmasi impor' })).toHaveCount(0);
+  expect(otherLookups).toBe(0);
+  await picker.selectOption(a);
+  await expect(page.getByRole('status').filter({ hasText: batch })).toBeVisible();
+  expect(keys).toHaveLength(1);
+  await preview();
+  await expect(page.getByRole('status').filter({ hasText: nextBatch })).toBeVisible();
+  expect(keys[1]).not.toBe(keys[0]);
+});
+
+test('resends an unconfirmed import with its original key only after the same preview', async ({ page }) => {
+  const keys: string[] = [];
+  await page.route(`**/cases/${a}/imports`, (route) => {
+    if (route.request().method() !== 'POST') return route.fulfill({ json: { items: [], next_cursor: null } });
+    keys.push(route.request().headers()['idempotency-key']);
+    return keys.length === 1 ? route.abort() : route.fulfill({ status: 201, json: summary });
+  });
+  await page.route(`**/cases/${b}/imports`, (route) =>
+    route.fulfill({ json: { items: [], next_cursor: null } }));
+  await page.route(`**/cases/${a}/imports/confirmation`, (route) => route.fulfill({ json: null }));
+  await page.route(`**/cases/${a}/imports/preview`, (route) => route.fulfill({
+    json: { rows: [{ row_number: 2, reference_label: 'Fixture label', status: 'valid', duplicate: false }] },
+  }));
+  await page.goto(`/?saved=${a}`);
+  await page.getByLabel('Nama pengguna').fill('operator');
+  await page.getByLabel('Kata sandi').fill('synthetic-password');
+  await page.getByRole('button', { name: 'Masuk' }).click();
+
+  async function preview(label: string) {
+    await page.getByLabel('Label manual, satu per baris').fill(label);
+    await page.getByRole('button', { name: 'Pratinjau label manual' }).click();
+    await expect(page.getByRole('list', { name: 'Pratinjau baris impor' })).toBeVisible();
+  }
+  await preview('Fixture label');
+  await page.getByRole('button', { name: 'Konfirmasi impor', exact: true }).click();
+  await expect(page.getByRole('alert')).toContainText('Konfirmasi impor gagal');
+  const picker = page.getByRole('combobox', { name: 'Kasus tersimpan' });
+  await picker.selectOption(b);
+  await picker.selectOption(a);
+  const retry = page.getByRole('button', { name: 'Coba lagi konfirmasi impor' });
+  await preview('Other label');
+  await retry.click();
+  await expect(page.getByRole('alert')).toContainText('Impor berbeda dari konfirmasi sebelumnya');
+  expect(keys).toHaveLength(1);
+  await preview('Fixture label');
+  await retry.click();
+  await expect(page.getByRole('status').filter({ hasText: batch })).toBeVisible();
+  expect(keys[0]).toBeTruthy();
+  expect(keys).toEqual([keys[0], keys[0]]);
+});

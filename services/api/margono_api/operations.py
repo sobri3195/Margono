@@ -363,6 +363,24 @@ def list_cases(
     return [CaseView.model_validate(row) for row in rows[:limit]]
 
 
+@router.get("/cases/creation-receipt")
+def case_creation_receipt(
+    key: IdempotencyKey, db: Database, user: CurrentOperator
+) -> CaseView | None:
+    if not CASE_OPERATORS & user.roles:
+        raise api_error(403, "case_access_denied", "This role cannot create cases.")
+    case_id = db.scalar(
+        text("""
+            SELECT case_id FROM case_creation_receipts
+            WHERE operator_id = :operator AND idempotency_key = :key
+        """),
+        {"operator": user.id, "key": key},
+    )
+    if case_id is None:
+        return None
+    return CaseView.model_validate(visible_case(db, user, case_id))
+
+
 @router.get("/cases/{case_id}")
 def get_case(case_id: UUID, db: Database, user: CurrentOperator) -> CaseView:
     return CaseView.model_validate(dict(visible_case(db, user, case_id)))
@@ -485,6 +503,25 @@ def list_imports(
         items=[ImportSummary.model_validate(row) for row in rows[:limit]],
         next_cursor=rows[limit - 1].id if len(rows) > limit else None,
     )
+
+
+@router.get("/cases/{case_id}/imports/confirmation")
+def import_confirmation(
+    case_id: UUID, key: IdempotencyKey, db: Database, user: CurrentOperator
+) -> ImportResult | None:
+    require_import_access(db, user, case_id)
+    row = (
+        db.execute(
+            text(
+                IMPORT_SUMMARY
+                + " AND i.idempotency_key = :key AND i.submitted_by_id = :user"
+            ),
+            {"case": case_id, "key": key, "user": user.id},
+        )
+        .mappings()
+        .one_or_none()
+    )
+    return ImportResult.model_validate(row) if row is not None else None
 
 
 @router.post("/cases/{case_id}/imports/columns")

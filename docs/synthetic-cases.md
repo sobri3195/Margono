@@ -40,9 +40,11 @@ Buka kasus dari fixture USB dengan akun Forensic Examiner yang berhak membacanya
 | --- | --- |
 | Login dan logout | `POST /api/v1/sessions` dan `DELETE /api/v1/sessions/current` |
 | Buat dan daftar kasus | `POST /api/v1/cases` dan `GET /api/v1/cases` dengan `before` dan `limit` opsional |
+| Pulihkan hasil pembuatan | `GET /api/v1/cases/creation-receipt` dengan `Idempotency-Key` |
 | Detail dan perubahan status Supervisor | `GET /api/v1/cases/{id}` dan `PATCH /api/v1/cases/{id}/status?status=closed` |
 | Daftar header impor | `POST /api/v1/cases/{id}/imports/columns` |
 | Riwayat impor | `GET /api/v1/cases/{id}/imports` dengan paginasi opsional `before` dan `limit` |
+| Pulihkan hasil konfirmasi | `GET /api/v1/cases/{id}/imports/confirmation` dengan `Idempotency-Key` |
 | Pratinjau dan konfirmasi impor | `POST /api/v1/cases/{id}/imports/preview` dan `POST /api/v1/cases/{id}/imports` |
 | Unduh bukti | `GET /api/v1/cases/{id}/imports/{import_id}/evidence` |
 | Baris dan audit batch | `GET /api/v1/cases/{id}/imports/{import_id}/details` |
@@ -53,6 +55,10 @@ Buka kasus dari fixture USB dengan akun Forensic Examiner yang berhak membacanya
 | Persetujuan dan scan sintetis | `GET` dan `POST /api/v1/cases/{id}/devices`, serta `POST` pada `/devices/{session_id}/jobs` dan `/devices/{session_id}/revoke` |
 
 Gunakan `Authorization: Bearer <token>` setelah login. Untuk membuat kasus, web mengirim `Idempotency-Key` baru dan memakai kunci yang sama saat mencoba ulang payload yang sama. Klien API lama tetap bisa membuat kasus tanpa header tersebut. Jika kunci dikirim, percobaan ulang oleh operator yang sama mengembalikan `201` dan respons asli, termasuk setelah kasus ditutup. Perubahan payload dengan kunci yang sama menghasilkan `409 idempotency_conflict`. Tujuan dan ruang lingkup dengan karakter kontrol menghasilkan `422` sebelum transaksi.
+
+Jika respons hilang, browser menyimpan kunci dan sidik jari operasi selama sesi tab, termasuk setelah reload dan login ulang. Referensi pembuatan terikat pada operator. Referensi konfirmasi impor terikat pada operator dan Case ID. Isi formulir, file, dan token sesi tidak disimpan bersama referensi itu.
+
+Gunakan **Coba lagi pembuatan kasus** untuk mencari hasil dan membuka status kasus terbaru. Untuk impor, buka kembali kasus agar portal mencari batch persis berdasarkan kunci konfirmasi, termasuk jika batch sudah berada di halaman riwayat berikutnya. Jika hasil belum tercatat, masukkan kembali isian yang sama atau pratinjau ulang impor yang sama, lalu pilih **Coba lagi**. Gunakan **Mulai pembuatan baru** atau **Mulai impor baru** untuk melepas referensi sebelumnya dan memulai operasi baru secara sengaja.
 
 Daftar kasus tetap mengirim array. Jika halaman berikutnya tersedia, gunakan nilai header `X-Next-Cursor` sebagai parameter `before`. Tombol **Muat kasus sebelumnya** mengikuti cursor itu dan mempertahankan pilihan saat ini.
 

@@ -176,7 +176,60 @@ def test_synthetic_case_with_scoped_sessions_and_immutable_csv(
         repeated = client.post("/api/v1/cases", headers=case_key, json=payload)
         assert repeated.status_code == 201 and repeated.json() == case
         assert client.get(path, headers=owner).json()["status"] == "closed"
+        receipt_path = "/api/v1/cases/creation-receipt"
+        recovered_case = client.get(receipt_path, headers=case_key)
+        assert recovered_case.json() == closed.json()
+        assert recovered_case.headers["Cache-Control"] == "no-store"
+        assert client.get(receipt_path, headers=owner).status_code == 422
+        assert (
+            client.get(
+                receipt_path, headers={**other, "Idempotency-Key": "create-fixture"}
+            ).json()
+            is None
+        )
+        assert (
+            client.get(
+                receipt_path,
+                headers={**supervisor, "Idempotency-Key": "create-fixture"},
+            ).status_code
+            == 403
+        )
         assert client.post(import_path, json=csv, headers=keyed).json() == stored
+
+        confirmation = f"{import_path}/confirmation"
+        recovered_import = client.get(confirmation, headers=keyed)
+        assert recovered_import.json() == stored
+        assert recovered_import.headers["Cache-Control"] == "no-store"
+        assert (
+            client.get(
+                confirmation, headers={**owner, "Idempotency-Key": "unknown"}
+            ).json()
+            is None
+        )
+        assert (
+            client.get(
+                confirmation, headers={**other, "Idempotency-Key": "synthetic-001"}
+            ).status_code
+            == 404
+        )
+        assert (
+            client.get(
+                confirmation, headers={**supervisor, "Idempotency-Key": "synthetic-001"}
+            ).status_code
+            == 403
+        )
+        separate_case = client.post(
+            "/api/v1/cases",
+            headers={**owner, "Idempotency-Key": "second-fixture"},
+            json=payload,
+        ).json()
+        assert (
+            client.get(
+                f"/api/v1/cases/{separate_case['id']}/imports/confirmation",
+                headers=keyed,
+            ).json()
+            is None
+        )
         assert (
             client.post(
                 import_path, json=csv, headers={**keyed, "Idempotency-Key": "other"}

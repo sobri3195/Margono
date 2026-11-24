@@ -1,8 +1,9 @@
-import { useEffect, useLayoutEffect, useRef, useState, type ChangeEvent, type FormEvent } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ChangeEvent, type FormEvent } from 'react';
 import { isUuid } from './api';
 import { isTimestamp } from './contracts';
 import { formatTimestamp } from './display';
 import { isObject, operatorResponse, request, RequestError, type Session } from './operatorApi';
+import { clearPendingWrite, readPendingWrite, savePendingWrite, writeFingerprint, type PendingWrite } from './pendingWrite';
 
 type Counts = { row_count: number; valid_count: number; invalid_count: number };
 type Result = Counts & { id: string; sha256: string };
@@ -20,7 +21,6 @@ type Inspection = {
   caseId: string;
   payload: ImportInput & { column: string };
   rows: PreviewRow[];
-  key: string;
 };
 type BatchDetails = {
   id: string;
@@ -73,6 +73,14 @@ async function loadHistory(path: string, session: Session, signal: AbortSignal):
   return { items: data.items, next_cursor: data.next_cursor };
 }
 
+async function loadConfirmation(path: string, key: string, session: Session, signal: AbortSignal) {
+  const result = await request(`${path}/confirmation`, {
+    headers: { 'Idempotency-Key': key }, signal,
+  }, session);
+  if (result !== null && !isResult(result)) throw new Error('Unexpected import confirmation');
+  return result;
+}
+
 function importIssue(error: unknown, fallback: string): Issue {
   if (!(error instanceof RequestError)) return { message: fallback };
   const message = error.status === 422 ? 'Periksa format impor atau pilihan kolom.'
@@ -85,19 +93,23 @@ function CountsSummary({ counts }: { counts: Counts }) {
   return <>{counts.valid_count} valid, {counts.invalid_count} tidak valid{pending > 0 && `, ${pending} menunggu`}</>;
 }
 
-export function CaseImports({ caseId, session, canImport, onSessionExpired }: {
+export function CaseImports({ caseId, session, canManageImports, caseOpen, onSessionExpired }: {
   caseId: string;
   session: Session;
-  canImport: boolean;
+  canManageImports: boolean;
+  caseOpen: boolean;
   onSessionExpired: (correlationId: string | null) => void;
 }) {
   const path = `/cases/${caseId}/imports`;
+  const storageKey = `margono.pending-import:${session.userId}:${caseId}`;
+  const canImport = canManageImports && caseOpen;
   const lifetime = useRef<AbortController>(null);
+  const [pendingConfirmation, setPendingConfirmation] = useState(() => readPendingWrite(storageKey));
   const [file, setFile] = useState<ImportInput & { columns: string[] }>();
   const [manual, setManual] = useState('');
   const [column, setColumn] = useState('');
   const [inspection, setInspection] = useState<Inspection>();
-  const [result, setResult] = useState<Counts>();
+  const [result, setResult] = useState<Result>();
   const [details, setDetails] = useState<BatchDetails>();
   const [submittedJobs, setSubmittedJobs] = useState<Record<string, string>>({});
   const [issue, setIssue] = useState<Issue>();
@@ -106,6 +118,15 @@ export function CaseImports({ caseId, session, canImport, onSessionExpired }: {
   const [historyIssue, setHistoryIssue] = useState<Issue>();
   const [historyAttempt, setHistoryAttempt] = useState(0);
   const visibleInspection = inspection?.caseId === caseId ? inspection : undefined;
+
+  const finishConfirmation = useCallback((attempt: PendingWrite, saved: Result) => {
+    if (!clearPendingWrite(storageKey, attempt)) return;
+    setPendingConfirmation(undefined);
+    setResult(saved);
+    setInspection(undefined);
+    setIssue(undefined);
+    setHistoryAttempt((previous) => previous + 1);
+  }, [storageKey]);
 
   useLayoutEffect(() => {
     const controller = new AbortController();
@@ -125,6 +146,21 @@ export function CaseImports({ caseId, session, canImport, onSessionExpired }: {
     });
     return () => controller.abort();
   }, [path, session, historyAttempt, onSessionExpired]);
+
+  useEffect(() => {
+    const attempt = canManageImports && readPendingWrite(storageKey);
+    if (!attempt) return;
+    const controller = new AbortController();
+    const { signal } = controller;
+    void loadConfirmation(path, attempt.key, session, signal).then((saved) => {
+      if (!signal.aborted && saved) finishConfirmation(attempt, saved);
+    }).catch((error: unknown) => {
+      if (signal.aborted || readPendingWrite(storageKey)?.key !== attempt.key) return;
+      if (error instanceof RequestError && error.status === 401) onSessionExpired(error.correlationId);
+      else setIssue(importIssue(error, 'Hasil konfirmasi sebelumnya gagal diperiksa. Coba lagi.'));
+    });
+    return () => controller.abort();
+  }, [canManageImports, finishConfirmation, onSessionExpired, path, session, storageKey]);
 
   async function perform(action: (signal: AbortSignal) => Promise<void>, fallback: string) {
     const signal = lifetime.current?.signal;
@@ -195,24 +231,55 @@ export function CaseImports({ caseId, session, canImport, onSessionExpired }: {
       if (!isObject(data) || !Array.isArray(data.rows) || !data.rows.every(isPreviewRow)) {
         throw new Error('Unexpected preview response');
       }
-      setInspection({ caseId, payload, rows: data.rows, key: crypto.randomUUID() });
+      setInspection({ caseId, payload, rows: data.rows });
     }, 'Pratinjau impor gagal dimuat.');
   }
 
   function confirm() {
-    if (!canImport || !visibleInspection) return;
-    const pending = visibleInspection;
+    if (!canManageImports) return;
+    const body = visibleInspection && JSON.stringify(visibleInspection.payload);
     void perform(async (signal) => {
-      const data = await request(`/cases/${pending.caseId}/imports`, {
-        method: 'POST', headers: { 'Idempotency-Key': pending.key },
-        body: JSON.stringify(pending.payload), signal,
+      let attempt = readPendingWrite(storageKey);
+      if (attempt) {
+        const saved = await loadConfirmation(path, attempt.key, session, signal);
+        signal.throwIfAborted();
+        if (readPendingWrite(storageKey)?.key !== attempt.key) return;
+        if (saved) {
+          finishConfirmation(attempt, saved);
+          return;
+        }
+      }
+      if (!canImport || !body) {
+        setIssue({ message: canImport
+          ? 'Hasil belum tercatat. Pratinjau kembali file atau label yang sama sebelum mencoba lagi.'
+          : 'Hasil belum tercatat. Kasus harus dibuka kembali untuk mengirim konfirmasi.' });
+        return;
+      }
+      const fingerprint = await writeFingerprint(body);
+      signal.throwIfAborted();
+      if (attempt && attempt.fingerprint !== fingerprint) {
+        setIssue({ message: 'Impor berbeda dari konfirmasi sebelumnya. Gunakan file dan kolom yang sama atau mulai impor baru.' });
+        return;
+      }
+      if (attempt && readPendingWrite(storageKey)?.key !== attempt.key) return;
+      if (!attempt) {
+        attempt = { key: crypto.randomUUID(), fingerprint };
+        savePendingWrite(storageKey, attempt);
+        setPendingConfirmation(attempt);
+      }
+      const data = await request(path, {
+        method: 'POST', headers: { 'Idempotency-Key': attempt.key }, body, signal,
       }, session);
       signal.throwIfAborted();
       if (!isResult(data)) throw new Error('Unexpected import result');
-      setResult(data);
-      setInspection(undefined);
-      setHistoryAttempt((previous) => previous + 1);
+      finishConfirmation(attempt, data);
     }, 'Konfirmasi impor gagal. Coba lagi untuk memakai kunci impor yang sama.');
+  }
+
+  function startNewImport(attempt: PendingWrite) {
+    if (!clearPendingWrite(storageKey, attempt)) return;
+    setPendingConfirmation(undefined);
+    setIssue(undefined);
   }
 
   function more() {
@@ -309,10 +376,22 @@ export function CaseImports({ caseId, session, canImport, onSessionExpired }: {
                 </li>
               ))}
             </ul>
-            <button type="button" onClick={confirm}>Konfirmasi impor</button>
+            {!pendingConfirmation && <button type="button" onClick={confirm}>Konfirmasi impor</button>}
           </>
         )}
-        {result && <p role="status">{result.row_count} baris tersimpan. <CountsSummary counts={result} />.</p>}
+        {canManageImports && pendingConfirmation && (
+          <>
+            <p role="status">Hasil konfirmasi sebelumnya belum diketahui. Mulai impor baru hanya jika Anda memang ingin membuat batch lain.</p>
+            <button type="button" onClick={confirm}>Coba lagi konfirmasi impor</button>
+            {canImport && <button type="button" onClick={() => startNewImport(pendingConfirmation)}>Mulai impor baru</button>}
+          </>
+        )}
+        {result && (
+          <div role="status">
+            <p>{result.row_count} baris tersimpan. <CountsSummary counts={result} />.</p>
+            <p>Import ID <code>{result.id}</code></p>
+          </div>
+        )}
         <h3>Riwayat impor</h3>
         {!history && !historyIssue && <p role="status">Memuat riwayat impor…</p>}
         {historyIssue && (
