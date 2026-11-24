@@ -17,7 +17,7 @@ test.beforeEach(async ({ page }) => {
       mode: 'SYNTHETIC',
       status: 'not_ready',
       pilot: 'blocked',
-      checks: { database: 'migration_required', worker: 'not_implemented', sync: 'not_implemented' },
+      checks: { database: 'migration_required', worker: 'not_observed', sync: 'not_implemented' },
     },
   }));
 });

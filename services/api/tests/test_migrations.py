@@ -21,6 +21,7 @@ def test_migration_up_down_up(isolated_database):
         "alembic_version",
         "audit_events",
         "cases",
+        "case_collaborators",
         "case_creation_receipts",
         "consent_decisions",
         "consent_records",
@@ -30,6 +31,13 @@ def test_migration_up_down_up(isolated_database):
         "imports",
         "jobs",
         "roles",
+        "procrastinate_events",
+        "procrastinate_jobs",
+        "procrastinate_periodic_defers",
+        "procrastinate_workers",
+        "synthetic_findings",
+        "synthetic_device_sessions",
+        "synthetic_device_evidence",
         "user_roles",
         "user_sessions",
         "users",
@@ -222,7 +230,7 @@ def test_consent_revocation_requires_valid_timestamp(isolated_database):
 
 
 def test_readiness_distinguishes_unmigrated_and_migrated_postgres(isolated_database):
-    config, _, _ = isolated_database
+    config, engine, _ = isolated_database
     with TestClient(app) as client:
         before = client.get("/api/v1/readiness")
         assert before.status_code == 503
@@ -232,7 +240,16 @@ def test_readiness_distinguishes_unmigrated_and_migrated_postgres(isolated_datab
         after = client.get("/api/v1/readiness")
         assert after.status_code == 503
         assert after.json()["checks"]["database"] == "ready"
+        assert after.json()["checks"]["worker"] == "not_observed"
         assert after.json()["pilot"] == "blocked"
+
+        with engine.begin() as connection:
+            connection.execute(
+                sa.text("INSERT INTO procrastinate_workers DEFAULT VALUES")
+            )
+        with_worker = client.get("/api/v1/readiness")
+        assert with_worker.status_code == 503
+        assert with_worker.json()["checks"]["worker"] == "active"
 
 
 def test_case_and_import_invariants(isolated_database):
@@ -300,7 +317,7 @@ def test_upgrade_requires_review_of_invalid_legacy_records(isolated_database):
     with engine.connect() as db:
         assert (
             db.scalar(sa.text("SELECT version_num FROM alembic_version"))
-            == "0005_case_retry_audit"
+            == "0006_synthetic_workflow"
         )
 
 

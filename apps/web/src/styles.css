@@ -33,10 +33,10 @@ label, dt { font-weight: 650; }
 dt { color: var(--muted); font-size: 0.88rem; }
 dl { display: grid; gap: 0.85rem; margin-bottom: 0; }
 dd { margin: 0.2rem 0 0; }
-button, select, input { font: inherit; color: var(--text); background: var(--surface); border: 1px solid var(--control-line); border-radius: 0.55rem; padding: 0.65rem 0.8rem; }
+button, select, input, textarea { font: inherit; color: var(--text); background: var(--surface); border: 1px solid var(--control-line); border-radius: 0.55rem; padding: 0.65rem 0.8rem; }
 button { cursor: pointer; }
 button[aria-pressed='true'] { background: var(--accent); border-color: var(--accent); color: var(--selected-text); }
-button:focus-visible, select:focus-visible, input:focus-visible, a:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+button:focus-visible, select:focus-visible, input:focus-visible, textarea:focus-visible, a:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
 select { display: block; width: 100%; margin-top: 0.6rem; }
 .message > p:first-child { margin-top: 0; }
 
@@ -52,9 +52,16 @@ select { display: block; width: 100%; margin-top: 0.6rem; }
 .case-console fieldset { border: 0; margin: 0; padding: 0; min-width: 0; }
 .case-console form, .case-console fieldset > label { margin: 1rem 0; }
 .case-console label { display: block; margin-bottom: 0.75rem; }
-.case-console input { display: block; width: 100%; max-width: 30rem; margin-top: 0.35rem; padding: 0.55rem; font: inherit; }
+.case-console input, .case-console textarea { display: block; width: 100%; max-width: 30rem; margin-top: 0.35rem; padding: 0.55rem; font: inherit; }
 .case-console ul { max-height: 14rem; overflow: auto; overflow-wrap: anywhere; }
 
 .theme-control { margin-top: 1rem; width: min(12rem, 100%); }
 a { color: var(--accent); }
 .case-details code { overflow-wrap: anywhere; }
+
+.workflow-report {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.case-console dialog { max-width: min(32rem, 90vw); color: var(--text); background: var(--surface); }

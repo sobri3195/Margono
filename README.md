@@ -38,7 +38,7 @@ Gunakan **Tema** untuk mengikuti sistem atau memilih tema terang atau gelap. Tau
 
 Lihat [panduan database](docs/database.md) untuk menjalankan PostgreSQL lokal, menerapkan migrasi, dan menguji constraint pada database terpisah.
 
-Untuk login lokal, kasus persisten, dan impor CSV sintetis, ikuti [panduan kasus simulasi](docs/synthetic-cases.md).
+Untuk login lokal, impor CSV/XLSX, worker, mock USB, review dan laporan, ikuti [panduan kasus simulasi](docs/synthetic-cases.md).
 
 ## Dokumen
 

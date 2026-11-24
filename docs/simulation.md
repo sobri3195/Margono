@@ -11,7 +11,7 @@ Katalog berisi 20 kasus tetap dengan Case ID berbeda. Dua kasus menggunakan labe
 | Batas kepercayaan | Risiko | Kontrol prototipe dan pekerjaan berikutnya |
 | --- | --- | --- |
 | Browser → API | Permintaan diubah atau label berisi konten aktif | Endpoint lokal hanya membaca fixture. React merender nilai sebagai teks. Untuk fitur impor, validasi skema dan izin per kasus di API sebelum menyimpan data. |
-| API → worker | Job diputar ulang atau pekerjaan berjalan setelah izin dicabut | Worker belum terhubung. Sebelum antrean diaktifkan, gunakan kunci idempotensi, simpan checkpoint, dan periksa otorisasi ketika job berjalan. |
+| API → worker | Job diputar ulang atau pekerjaan berjalan setelah izin dicabut | Worker Procrastinate menyimpan hasil dan status secara atomik per job. Antrean simulasi sumber memakai kunci idempotensi dan tugas perangkat memeriksa consent sebelum menyimpan bukti. |
 | Desktop → API/cloud | Perangkat hilang atau identitas perangkat dipalsukan | Desktop dan cloud belum terhubung. Enrollment, mTLS, dan sesi offline harus diuji sebelum sinkronisasi. |
 | Desktop → mobile | Akses melampaui persetujuan atau kapabilitas resmi | Profil saat ini berupa fixture lokal. Integrasi perangkat membutuhkan consent spesifik yang dapat dicabut, izin per kapabilitas, dan penghentian pekerjaan saat consent dicabut. |
 | Worker → sumber eksternal | URL sewenang-wenang, pembatasan penggunaan sumber, atau data berbahaya | Profil sumber tidak menyimpan URL yang dapat dipanggil. Konektor mendatang memerlukan daftar tujuan yang disetujui, pembatasan permintaan, dan validasi respons. |

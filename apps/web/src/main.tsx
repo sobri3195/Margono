@@ -142,6 +142,12 @@ const databaseLabels = {
   migration_required: 'Memerlukan migrasi',
 };
 
+const workerLabels = {
+  active: 'Aktif',
+  not_observed: 'Belum terdeteksi',
+  unavailable: 'Tidak dapat diperiksa',
+};
+
 function SystemStatus() {
   const { state, retry } = useResource('/api/v1/readiness', decodeReadiness, 503);
 
@@ -160,7 +166,7 @@ function SystemStatus() {
         <>
           <dl>
             <div><dt>PostgreSQL</dt><dd>{databaseLabels[state.data.checks.database]}</dd></div>
-            <div><dt>Worker</dt><dd>Belum tersedia</dd></div>
+            <div><dt>Worker</dt><dd>{workerLabels[state.data.checks.worker]}</dd></div>
             <div><dt>Sinkronisasi</dt><dd>Belum tersedia</dd></div>
             <div><dt>Pilot</dt><dd>Belum siap</dd></div>
           </dl>

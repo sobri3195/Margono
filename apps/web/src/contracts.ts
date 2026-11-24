@@ -67,14 +67,16 @@ export function decodeCatalog(value: unknown): Catalog | undefined {
 }
 
 type DatabaseStatus = 'ready' | 'not_configured' | 'unavailable' | 'migration_required';
+type WorkerStatus = 'active' | 'not_observed' | 'unavailable';
 type Readiness = {
-  checks: { database: DatabaseStatus; worker: 'not_implemented'; sync: 'not_implemented' };
+  checks: { database: DatabaseStatus; worker: WorkerStatus; sync: 'not_implemented' };
 };
 
 export function decodeReadiness(value: unknown): Readiness | undefined {
   if (!isRecord(value) || value.status !== 'not_ready' || value.mode !== 'SYNTHETIC' || value.pilot !== 'blocked'
-      || !isRecord(value.checks) || value.checks.worker !== 'not_implemented' || value.checks.sync !== 'not_implemented') return;
+      || !isRecord(value.checks) || value.checks.sync !== 'not_implemented') return;
   const { database, worker, sync } = value.checks;
+  if (worker !== 'active' && worker !== 'not_observed' && worker !== 'unavailable') return;
   if (database === 'ready' || database === 'not_configured' || database === 'unavailable' || database === 'migration_required') {
     return { checks: { database, worker, sync } };
   }
