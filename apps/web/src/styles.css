@@ -54,6 +54,7 @@ select { display: block; width: 100%; margin-top: 0.6rem; }
 .case-console label { display: block; margin-bottom: 0.75rem; }
 .case-console input, .case-console textarea { display: block; width: 100%; max-width: 30rem; margin-top: 0.35rem; padding: 0.55rem; font: inherit; }
 .case-console ul { max-height: 14rem; overflow: auto; overflow-wrap: anywhere; }
+.case-console .operation-status:empty { margin: 0; }
 
 .theme-control { margin-top: 1rem; width: min(12rem, 100%); }
 a { color: var(--accent); }

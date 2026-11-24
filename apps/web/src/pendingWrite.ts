@@ -1,5 +1,5 @@
 import { isUuid } from './api';
-import { isObject } from './operatorApi';
+import { isObject, RequestError } from './operatorApi';
 
 export type PendingWrite = { key: string; fingerprint: string };
 
@@ -23,6 +23,10 @@ export function clearPendingWrite(storageKey: string, operation: PendingWrite) {
   if (readPendingWrite(storageKey)?.key !== operation.key) return false;
   sessionStorage.removeItem(storageKey);
   return true;
+}
+
+export function isWriteRejection(error: unknown) {
+  return error instanceof RequestError && [403, 404, 409, 422].includes(error.status);
 }
 
 export async function writeFingerprint(body: string) {
