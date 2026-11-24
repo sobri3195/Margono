@@ -85,6 +85,12 @@ def test_synthetic_case_with_scoped_sessions_and_immutable_csv(
             client.post(f"{import_path}/preview", json=csv, headers=other).status_code
             == 404
         )
+        assert (
+            client.post(f"{import_path}/columns", json=csv, headers=other).status_code
+            == 404
+        )
+        columns = client.post(f"{import_path}/columns", json=csv, headers=owner)
+        assert columns.json() == {"columns": ["Nama", "Unit"]}
         preview = client.post(f"{import_path}/preview", json=csv, headers=owner)
         assert preview.status_code == 200, preview.text
         assert [row["duplicate"] for row in preview.json()["rows"]] == [
@@ -111,6 +117,8 @@ def test_synthetic_case_with_scoped_sessions_and_immutable_csv(
         stored = first.json()
         assert (
             stored["row_count"] == 3
+            and stored["valid_count"] == 2
+            and stored["invalid_count"] == 1
             and stored["sha256"] == sha256(raw.encode()).hexdigest()
         )
         assert client.post(import_path, json=csv, headers=keyed).json() == stored
@@ -120,6 +128,14 @@ def test_synthetic_case_with_scoped_sessions_and_immutable_csv(
             ).status_code
             == 409
         )
+        assert client.get(import_path, headers=other).status_code == 404
+        page = client.get(import_path, headers=supervisor).json()
+        assert page["next_cursor"] is None
+        summary = page["items"][0]
+        assert summary["id"] == stored["id"]
+        assert summary["selected_column"] == "Nama"
+        assert summary["sha256"] == stored["sha256"]
+        assert summary["invalid_count"] == 1
         evidence = f"{import_path}/{stored['id']}/evidence"
         assert client.get(evidence, headers=other).status_code == 404
         retrieved = client.get(evidence, headers=supervisor)
@@ -181,3 +197,70 @@ def test_synthetic_case_with_scoped_sessions_and_immutable_csv(
                 text("INSERT INTO import_evidence VALUES (:id, :content, :sha)"),
                 dict(id=extra, content=b"wrong", sha=uuid4().hex),
             )
+
+
+def test_import_history_pages_through_legacy_rows(isolated_database, monkeypatch):
+    config, engine, _ = isolated_database
+    command.upgrade(config, "head")
+    monkeypatch.setattr("sys.argv", ["provision", "owner", "osint_analyst"])
+    monkeypatch.setattr(provision, "getpass", lambda _: "synthetic-test-only")
+    provision.main()
+    with TestClient(app) as client:
+        login = client.post(
+            "/api/v1/sessions",
+            json={
+                "username": "owner",
+                "password": "synthetic-test-only",
+            },
+        )
+        headers = {"Authorization": f"Bearer {login.json()['token']}"}
+        case = client.post(
+            "/api/v1/cases",
+            headers=headers,
+            json={
+                "fixture_id": "SYN-001",
+                "purpose": "Exercise",
+                "scope": "Fixture",
+            },
+        ).json()
+        path = f"/api/v1/cases/{case['id']}/imports"
+        with engine.begin() as db:
+            older = db.scalar(
+                text("""
+                INSERT INTO imports (case_id, submitted_by_id, source_ref, created_at)
+                SELECT id, owner_id, 'legacy', now() - interval '1 day' FROM cases
+                RETURNING id
+            """)
+            )
+            db.execute(
+                text("INSERT INTO import_rows (import_id, row_number) VALUES (:id, 2)"),
+                {"id": older},
+            )
+        saved = client.post(
+            path,
+            headers={**headers, "Idempotency-Key": "current"},
+            json={"content": "Label\nFixture\n", "column": "Label"},
+        )
+        assert saved.status_code == 201, saved.text
+        latest = saved.json()["id"]
+
+        first = client.get(path, headers=headers, params={"limit": 1}).json()
+        assert [item["id"] for item in first["items"]] == [latest]
+        assert first["next_cursor"] == latest
+        second = client.get(
+            path, headers=headers, params={"before": latest, "limit": 1}
+        ).json()
+        assert second["next_cursor"] is None
+        legacy = second["items"][0]
+        assert legacy["id"] == str(older)
+        assert legacy["sha256"] is None
+        assert (
+            legacy["row_count"] == 1
+            and legacy["valid_count"] == legacy["invalid_count"] == 0
+        )
+        assert (
+            client.get(
+                path, headers=headers, params={"before": str(uuid4())}
+            ).status_code
+            == 404
+        )

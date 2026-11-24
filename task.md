@@ -95,7 +95,7 @@ margono/
 
 - [ ] **T-015 (P0, E03)** Create Case CRUD with unique Case ID, purpose and status. **DoD:** create/open/close on synthetic cases, audit emitted. [FR-010]
 - [ ] **T-016 (P0, E03)** Add XLSX/CSV upload with file size, encoding, type and malware-safe validation. **DoD:** malformed and oversized files rejected safely. [FR-020]
-- [ ] **T-017 (P0, E03)** Build Guided Wizard, column mapping and row preview. **DoD:** user chooses `Nama` column and confirms import. [FR-021]
+- [x] **T-017 (P0, E03)** Build Guided Wizard, column mapping and row preview. **DoD:** user chooses `Nama` column and confirms import. [FR-021] CSV column picker and confirmation covered in `apps/web/tests/imports.spec.ts`.
 - [ ] **T-018 (P0, E03)** Implement duplicate row grouping without identity merge. **DoD:** same-name cases remain distinct unless human explicitly resolves. [FR-022]
 - [ ] **T-019 (P0, E04)** Define adapter interface for public cyber indicators with simulated data. **DoD:** fixture adapter returns source/ref, timestamp, IOC and result state. [FR-023]
 - [ ] **T-020 (P0, E04)** Build analyst review queue and evidence checklist. **DoD:** Verified/Inconclusive/Rejected supported; no automatic person inference. [FR-025, FR-026]

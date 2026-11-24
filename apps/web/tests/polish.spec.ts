@@ -134,6 +134,7 @@ test('saved case links require login and check access through the API', async ({
 });
 
 test('an authorized saved case outside the list opens with its timestamps', async ({ page }) => {
+  await page.route('**/imports', (route) => route.fulfill({ json: { items: [], next_cursor: null } }));
   await page.route('**/api/v1/sessions', (route) => route.fulfill({
     status: 201, json: { token: 'synthetic-session', user_id: ownerId, roles: ['supervisor'] },
   }));

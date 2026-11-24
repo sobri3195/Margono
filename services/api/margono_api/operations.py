@@ -6,13 +6,21 @@ from threading import BoundedSemaphore
 from typing import Annotated, Literal
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Header, Request, Response
+from fastapi import APIRouter, Depends, Header, Query, Request, Response
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, Field, StringConstraints
 from sqlalchemy import text
 from sqlalchemy.engine import Connection, RowMapping
 
-from .csv_imports import CsvInput, CsvPreview, preview_csv
+from .csv_imports import (
+    CsvColumns,
+    CsvContent,
+    CsvInput,
+    CsvPreview,
+    csv_reader,
+    preview_csv,
+    read_columns,
+)
 from .database import database_transaction
 from .errors import api_error
 from .fixtures import CATALOG
@@ -289,10 +297,43 @@ def set_case_status(
     return CaseView.model_validate(dict(row))
 
 
-class ImportResult(BaseModel):
+class ImportCounts(BaseModel):
+    row_count: int
+    valid_count: int
+    invalid_count: int
+
+
+class ImportResult(ImportCounts):
     id: UUID
     sha256: str
-    row_count: int
+
+
+class ImportSummary(ImportCounts):
+    id: UUID
+    created_at: datetime
+    selected_column: str | None
+    sha256: str | None
+    submitted_by_id: UUID
+
+
+class ImportPage(BaseModel):
+    items: list[ImportSummary]
+    next_cursor: UUID | None
+
+
+IMPORT_SUMMARY = """
+    SELECT i.id, i.created_at, i.selected_column, i.submitted_by_id, e.sha256,
+           stats.row_count, stats.valid_count, stats.invalid_count
+    FROM imports i
+    LEFT JOIN import_evidence e ON e.import_id = i.id
+    CROSS JOIN LATERAL (
+        SELECT count(*) AS row_count,
+               count(*) FILTER (WHERE status = 'valid') AS valid_count,
+               count(*) FILTER (WHERE status = 'invalid') AS invalid_count
+        FROM import_rows WHERE import_id = i.id
+    ) stats
+    WHERE i.case_id = :case
+"""
 
 
 def require_import_access(
@@ -306,6 +347,56 @@ def require_import_access(
     if row.owner_id != user.id:
         raise api_error(404, "case_not_found", "Case not found.")
     return row
+
+
+@router.get("/cases/{case_id}/imports")
+def list_imports(
+    case_id: UUID,
+    db: Database,
+    user: CurrentOperator,
+    before: UUID | None = None,
+    limit: Annotated[int, Query(ge=1, le=100)] = 20,
+) -> ImportPage:
+    visible_case(db, user, case_id)
+    cutoff = ""
+    params = {"case": case_id, "limit": limit + 1}
+    if before is not None:
+        cursor = db.execute(
+            text("SELECT created_at FROM imports WHERE case_id = :case AND id = :id"),
+            {"case": case_id, "id": before},
+        ).one_or_none()
+        if cursor is None:
+            raise api_error(404, "import_not_found", "Import cursor not found.")
+        cutoff = " AND (i.created_at, i.id) < (:created_at, :id)"
+        params.update(created_at=cursor.created_at, id=before)
+    rows = (
+        db.execute(
+            text(
+                IMPORT_SUMMARY
+                + cutoff
+                + " ORDER BY i.created_at DESC, i.id DESC LIMIT :limit"
+            ),
+            params,
+        )
+        .mappings()
+        .all()
+    )
+    return ImportPage(
+        items=[ImportSummary.model_validate(row) for row in rows[:limit]],
+        next_cursor=rows[limit - 1].id if len(rows) > limit else None,
+    )
+
+
+@router.post("/cases/{case_id}/imports/columns")
+def import_columns(
+    case_id: UUID,
+    payload: CsvContent,
+    db: Database,
+    user: CurrentOperator,
+) -> CsvColumns:
+    require_import_access(db, user, case_id)
+    _, parser = csv_reader(payload.content)
+    return CsvColumns(columns=read_columns(parser))
 
 
 @router.post("/cases/{case_id}/imports/preview")
@@ -331,11 +422,7 @@ def confirm_import(
     digest = sha256(payload.content.encode()).hexdigest()
     prior = (
         db.execute(
-            text("""
-        SELECT i.id, i.selected_column, e.sha256, (SELECT count(*) FROM import_rows r WHERE r.import_id=i.id) AS row_count
-        FROM imports i JOIN import_evidence e ON e.import_id = i.id
-        WHERE i.case_id = :case AND i.idempotency_key = :key
-    """),
+            text(IMPORT_SUMMARY + " AND i.idempotency_key = :key"),
             {"case": case_id, "key": key},
         )
         .mappings()
@@ -346,7 +433,7 @@ def confirm_import(
             raise api_error(
                 409, "idempotency_conflict", "This key belongs to a different import."
             )
-        return ImportResult(id=prior.id, sha256=prior.sha256, row_count=prior.row_count)
+        return ImportResult.model_validate(prior)
     if case.status != "open":
         raise api_error(409, "case_closed", "Reopen the case before importing.")
 
@@ -379,7 +466,14 @@ def confirm_import(
         ],
     )
     write_audit(db, request, user.id, "import.confirmed", case_id)
-    return ImportResult(id=batch, sha256=digest, row_count=len(preview.rows))
+    valid = sum(row.status == "valid" for row in preview.rows)
+    return ImportResult(
+        id=batch,
+        sha256=digest,
+        row_count=len(preview.rows),
+        valid_count=valid,
+        invalid_count=len(preview.rows) - valid,
+    )
 
 
 @router.get("/cases/{case_id}/imports/{import_id}/evidence")

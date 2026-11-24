@@ -1,40 +1,14 @@
-import { useEffect, useState, type FormEvent } from 'react';
-import { isUuid, readCorrelationId } from './api';
+import { useCallback, useEffect, useState, type FormEvent } from 'react';
+import { isUuid } from './api';
+import { CaseImports } from './CaseImports';
 import { isTimestamp, type SyntheticCase } from './contracts';
 import { formatTimestamp, rememberSelection, selectionUrl } from './display';
+import { isObject, request, RequestError, type Session } from './operatorApi';
 
-type Session = { token: string; userId: string; roles: string[] };
 type Case = {
   id: string; owner_id: string; synthetic_fixture_id: string; purpose: string;
   status: 'open' | 'closed'; created_at: string; closed_at: string | null;
 };
-type PreviewRow = {
-  row_number: number;
-  reference_label: string | null;
-  status: 'valid' | 'invalid';
-  duplicate: boolean;
-};
-type ImportPayload = { content: string; column: string };
-type InputPreview = { payload: ImportPayload; rows: PreviewRow[]; key: string };
-
-class RequestError extends Error {
-  constructor(readonly status: number, readonly correlationId: string | null) { super('Operator request failed'); }
-}
-
-async function request(path: string, options: RequestInit = {}, session?: Session): Promise<unknown> {
-  const headers = new Headers(options.headers);
-  if (options.body) headers.set('Content-Type', 'application/json');
-  if (session) headers.set('Authorization', `Bearer ${session.token}`);
-  const response = await fetch(`/api/v1${path}`, {
-    ...options, headers, cache: 'no-store', signal: AbortSignal.timeout(10_000),
-  });
-  if (!response.ok) throw new RequestError(response.status, readCorrelationId(response));
-  return response.status === 204 ? null : response.json();
-}
-
-function isObject(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
 
 function isCase(value: unknown): value is Case {
   return isObject(value) && isUuid(value.id) && isUuid(value.owner_id)
@@ -43,20 +17,12 @@ function isCase(value: unknown): value is Case {
     && isTimestamp(value.created_at) && (value.closed_at === null || isTimestamp(value.closed_at));
 }
 
-function isPreviewRow(value: unknown): value is PreviewRow {
-  return isObject(value) && typeof value.row_number === 'number'
-    && (typeof value.reference_label === 'string' || value.reference_label === null)
-    && (value.status === 'valid' || value.status === 'invalid') && typeof value.duplicate === 'boolean';
-}
-
 const caseRoles = ['osint_analyst', 'forensic_examiner'];
 
 export function CaseConsole({ fixtures }: { fixtures: SyntheticCase[] }) {
   const [session, setSession] = useState<Session>();
   const [cases, setCases] = useState<Case[]>([]);
   const [selectedId, setSelectedId] = useState('');
-  const [inspection, setInspection] = useState<InputPreview>();
-  const [result, setResult] = useState('');
   const [issue, setIssue] = useState('');
   const [issueId, setIssueId] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -67,24 +33,22 @@ export function CaseConsole({ fixtures }: { fixtures: SyntheticCase[] }) {
       const id = new URLSearchParams(window.location.search).get('saved') ?? '';
       if (id === selectedId) return;
       setSelectedId(id);
-      setInspection(undefined);
-      setResult('');
     }
     window.addEventListener('popstate', handlePop);
     return () => window.removeEventListener('popstate', handlePop);
   }, [selectedId]);
 
-  function resetImport() {
-    setInspection(undefined);
-    setResult('');
-  }
-
-  function clearSession() {
+  const clearSession = useCallback(() => {
     setSession(undefined);
     setCases([]);
     setSelectedId('');
-    resetImport();
-  }
+  }, []);
+
+  const expireSession = useCallback((correlationId: string | null) => {
+    clearSession();
+    setIssue('Sesi telah berakhir. Silakan masuk kembali.');
+    setIssueId(correlationId);
+  }, [clearSession]);
 
   async function perform(action: () => Promise<void>) {
     setBusy(true);
@@ -116,7 +80,6 @@ export function CaseConsole({ fixtures }: { fixtures: SyntheticCase[] }) {
     setCases((previous) => [value, ...previous.filter((item) => item.id !== value.id)]);
     setSelectedId(value.id);
     rememberSelection('saved', value.id);
-    resetImport();
   }
 
   function login(event: FormEvent<HTMLFormElement>) {
@@ -170,30 +133,6 @@ export function CaseConsole({ fixtures }: { fixtures: SyntheticCase[] }) {
     });
   }
 
-  function previewImport(event: FormEvent<HTMLFormElement>, active: Session, current: Case) {
-    event.preventDefault();
-    const fields = new FormData(event.currentTarget);
-    const file = fields.get('file');
-    setInspection(undefined);
-    setResult('');
-    if (!(file instanceof File) || !file.size || file.size > 65_536) {
-      setIssueId(null);
-      setIssue('Pilih CSV UTF-8 dengan ukuran hingga 64 KiB.');
-      return;
-    }
-    void perform(async () => {
-      const content = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(await file.arrayBuffer());
-      const payload = { content, column: String(fields.get('column')) };
-      const result = await request(`/cases/${current.id}/imports/preview`, {
-        method: 'POST', body: JSON.stringify(payload),
-      }, active);
-      if (!isObject(result) || !Array.isArray(result.rows) || !result.rows.every(isPreviewRow)) {
-        throw new Error('Unexpected preview response');
-      }
-      setInspection({ payload, rows: result.rows, key: crypto.randomUUID() });
-    });
-  }
-
   return (
     <section className="message system-status case-console" aria-labelledby="case-console-label">
       <h2 id="case-console-label">Kasus simulasi tersimpan</h2>
@@ -233,7 +172,6 @@ export function CaseConsole({ fixtures }: { fixtures: SyntheticCase[] }) {
                 rememberSelection('saved', event.target.value);
                 setIssue('');
                 setIssueId(null);
-                resetImport();
               }}>
                 <option value="" disabled>Pilih kasus</option>
                 {cases.map((item) => <option key={item.id} value={item.id}>{item.synthetic_fixture_id} · {item.purpose}</option>)}
@@ -254,36 +192,13 @@ export function CaseConsole({ fixtures }: { fixtures: SyntheticCase[] }) {
                   updateCase(await request(`/cases/${selected.id}/status?status=${status}`, { method: 'PATCH' }, session));
                 })}>{selected.status === 'open' ? 'Tutup kasus' : 'Buka kembali kasus'}</button>
               )}
-              {session.roles.includes('osint_analyst') && selected.owner_id === session.userId && selected.status === 'open' && (
-                <form onSubmit={(event) => previewImport(event, session, selected)} onChange={resetImport}>
-                  <label>CSV sintetis <input name="file" type="file" accept=".csv,text/csv" required /></label>
-                  <label>Kolom label <input name="column" defaultValue="Nama" maxLength={128} required /></label>
-                  <button type="submit">Pratinjau CSV</button>
-                </form>
-              )}
-              {inspection && (
-                <>
-                  <ul aria-label="Pratinjau baris CSV">
-                    {inspection.rows.map((row) => (
-                      <li key={row.row_number}>
-                        {row.row_number} · {row.reference_label ?? 'Label kosong atau tidak valid'} · {row.status}
-                        {row.duplicate && ' · Duplikat'}
-                      </li>
-                    ))}
-                  </ul>
-                  <button type="button" onClick={() => void perform(async () => {
-                    const saved = await request(`/cases/${selected.id}/imports`, {
-                      method: 'POST',
-                      headers: { 'Idempotency-Key': inspection.key },
-                      body: JSON.stringify(inspection.payload),
-                    }, session);
-                    if (!isObject(saved) || typeof saved.row_count !== 'number') throw new Error('Unexpected import result');
-                    setResult(`${saved.row_count} baris tersimpan.`);
-                    setInspection(undefined);
-                  })}>Konfirmasi impor</button>
-                </>
-              )}
-              {result && <p role="status">{result}</p>}
+              <CaseImports
+                key={selected.id}
+                caseId={selected.id}
+                session={session}
+                canImport={session.roles.includes('osint_analyst') && selected.owner_id === session.userId && selected.status === 'open'}
+                onSessionExpired={expireSession}
+              />
             </>
           ) : cases.length === 0 && <p>Belum ada kasus yang dapat Anda akses.</p>}
         </fieldset>
