@@ -13,6 +13,7 @@ export type SyntheticCase = {
   workspace: Workspace;
   scenario: string;
   reference_id: string;
+  created_at: string;
 };
 
 type SourceProfile = {
@@ -32,10 +33,15 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
 
+export function isTimestamp(value: unknown): value is string {
+  return typeof value === 'string' && Number.isFinite(Date.parse(value));
+}
+
 function isCase(value: unknown): value is SyntheticCase {
   return isRecord(value) && typeof value.case_id === 'string'
     && typeof value.label === 'string' && (value.workspace === 'web' || value.workspace === 'usb')
-    && typeof value.scenario === 'string' && typeof value.reference_id === 'string';
+    && typeof value.scenario === 'string' && typeof value.reference_id === 'string'
+    && isTimestamp(value.created_at);
 }
 
 function isSource(value: unknown): value is SourceProfile {

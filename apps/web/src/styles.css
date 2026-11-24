@@ -1,26 +1,18 @@
 :root {
   color-scheme: light dark;
   font-family: system-ui, sans-serif;
-  --background: #f3f5f7;
-  --surface: #fff;
-  --text: #182331;
-  --muted: #4d6072;
-  --line: #c8d3de;
-  --accent: #075a55;
-  --selected-text: #fff;
+  --background: light-dark(#f3f5f7, #101822);
+  --surface: light-dark(#fff, #172432);
+  --text: light-dark(#182331, #edf4f8);
+  --muted: light-dark(#4d6072, #b4c5d5);
+  --line: light-dark(#c8d3de, #486071);
+  --control-line: light-dark(#687b8e, #7790a5);
+  --accent: light-dark(#075a55, #8ae5d3);
+  --selected-text: light-dark(#fff, #102c29);
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #101822;
-    --surface: #172432;
-    --text: #edf4f8;
-    --muted: #b4c5d5;
-    --line: #486071;
-    --accent: #8ae5d3;
-    --selected-text: #102c29;
-  }
-}
+:root[data-theme='light'] { color-scheme: light; }
+:root[data-theme='dark'] { color-scheme: dark; }
 
 * { box-sizing: border-box; }
 body { margin: 0; background: var(--background); color: var(--text); }
@@ -41,10 +33,10 @@ label, dt { font-weight: 650; }
 dt { color: var(--muted); font-size: 0.88rem; }
 dl { display: grid; gap: 0.85rem; margin-bottom: 0; }
 dd { margin: 0.2rem 0 0; }
-button, select { font: inherit; color: var(--text); background: var(--surface); border: 1px solid var(--line); border-radius: 0.55rem; padding: 0.65rem 0.8rem; }
+button, select, input { font: inherit; color: var(--text); background: var(--surface); border: 1px solid var(--control-line); border-radius: 0.55rem; padding: 0.65rem 0.8rem; }
 button { cursor: pointer; }
 button[aria-pressed='true'] { background: var(--accent); border-color: var(--accent); color: var(--selected-text); }
-button:focus-visible, select:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+button:focus-visible, select:focus-visible, input:focus-visible, a:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
 select { display: block; width: 100%; margin-top: 0.6rem; }
 .message > p:first-child { margin-top: 0; }
 
@@ -62,3 +54,7 @@ select { display: block; width: 100%; margin-top: 0.6rem; }
 .case-console label { display: block; margin-bottom: 0.75rem; }
 .case-console input { display: block; width: 100%; max-width: 30rem; margin-top: 0.35rem; padding: 0.55rem; font: inherit; }
 .case-console ul { max-height: 14rem; overflow: auto; overflow-wrap: anywhere; }
+
+.theme-control { margin-top: 1rem; width: min(12rem, 100%); }
+a { color: var(--accent); }
+.case-details code { overflow-wrap: anywhere; }

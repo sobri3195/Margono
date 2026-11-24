@@ -7,7 +7,7 @@ const catalog = {
   mode: 'SYNTHETIC',
   sources: [],
   devices: [],
-  cases: [{ case_id: 'SYN-001', label: 'Kasus contoh', workspace: 'web', scenario: 'Fixture', reference_id: 'SRC-FIXTURE' }],
+  cases: [{ case_id: 'SYN-001', label: 'Kasus contoh', workspace: 'web', scenario: 'Fixture', reference_id: 'SRC-FIXTURE', created_at: '2026-01-01T00:00:00Z' }],
 };
 
 test.beforeEach(async ({ page }) => {

@@ -8,6 +8,15 @@ type Resource<T> =
   | { status: 'error'; reason: Failure; correlationId: string | null }
   | { status: 'ready'; data: T; correlationId: string | null };
 
+export function isUuid(value: unknown): value is string {
+  return typeof value === 'string' && /^[\da-f]{8}-[\da-f]{4}-[\da-f]{4}-[\da-f]{4}-[\da-f]{12}$/i.test(value);
+}
+
+export function readCorrelationId(response: Response): string | null {
+  const id = response.headers.get('X-Correlation-ID');
+  return isUuid(id) ? id : null;
+}
+
 export function useResource<T>(
   path: string,
   decode: (value: unknown) => T | undefined,
@@ -28,10 +37,7 @@ export function useResource<T>(
       let reason: Failure = 'request';
       try {
         const response = await fetch(path, { signal: controller.signal });
-        const id = response.headers.get('X-Correlation-ID');
-        if (id && /^[\da-f]{8}-[\da-f]{4}-[\da-f]{4}-[\da-f]{4}-[\da-f]{12}$/i.test(id)) {
-          correlationId = id;
-        }
+        correlationId = readCorrelationId(response);
         if (response.status !== expectedStatus) throw new Error('Unexpected HTTP status');
         reason = 'invalid';
         const data = decode(await response.json());
