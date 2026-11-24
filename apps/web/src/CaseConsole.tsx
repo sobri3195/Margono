@@ -1,9 +1,9 @@
-import { useCallback, useEffect, useState, type FormEvent } from 'react';
+import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react';
 import { isUuid } from './api';
 import { CaseImports } from './CaseImports';
 import { isTimestamp, type SyntheticCase } from './contracts';
 import { formatTimestamp, rememberSelection, selectionUrl } from './display';
-import { isObject, request, RequestError, type Session } from './operatorApi';
+import { isObject, operatorResponse, request, RequestError, type Session } from './operatorApi';
 
 type Case = {
   id: string; owner_id: string; synthetic_fixture_id: string; purpose: string;
@@ -17,11 +17,27 @@ function isCase(value: unknown): value is Case {
     && isTimestamp(value.created_at) && (value.closed_at === null || isTimestamp(value.closed_at));
 }
 
+async function readCasePage(session: Session, before?: string) {
+  const query = before ? `?before=${before}` : '';
+  const response = await operatorResponse(`/cases${query}`, {}, session);
+  const items: unknown = await response.json();
+  const cursor = response.headers.get('X-Next-Cursor');
+  if (!Array.isArray(items) || !items.every(isCase) || (cursor !== null && !isUuid(cursor))) {
+    throw new Error('Unexpected case list');
+  }
+  return { items, cursor };
+}
+
 const caseRoles = ['osint_analyst', 'forensic_examiner'];
 
 export function CaseConsole({ fixtures }: { fixtures: SyntheticCase[] }) {
   const [session, setSession] = useState<Session>();
   const [cases, setCases] = useState<Case[]>([]);
+  const [cursor, setCursor] = useState<string | null>(null);
+  const pendingCreation = useRef<{ body: string; key: string }>(null);
+  const casePicker = useRef<HTMLSelectElement>(null);
+  const loadMoreButton = useRef<HTMLButtonElement>(null);
+  const restorePaginationFocus = useRef(false);
   const [selectedId, setSelectedId] = useState('');
   const [issue, setIssue] = useState('');
   const [issueId, setIssueId] = useState<string | null>(null);
@@ -38,9 +54,19 @@ export function CaseConsole({ fixtures }: { fixtures: SyntheticCase[] }) {
     return () => window.removeEventListener('popstate', handlePop);
   }, [selectedId]);
 
+  useEffect(() => {
+    if (busy || !restorePaginationFocus.current) return;
+    restorePaginationFocus.current = false;
+    const target = cursor ? loadMoreButton.current : casePicker.current;
+    target?.focus();
+  }, [busy, cursor]);
+
   const clearSession = useCallback(() => {
     setSession(undefined);
     setCases([]);
+    setCursor(null);
+    pendingCreation.current = null;
+    restorePaginationFocus.current = false;
     setSelectedId('');
   }, []);
 
@@ -96,13 +122,13 @@ export function CaseConsole({ fixtures }: { fixtures: SyntheticCase[] }) {
       }
       const next = { token: value.token, userId: value.user_id, roles: value.roles };
       if (next.roles.some((role) => caseRoles.includes(role) || role === 'supervisor')) {
-        const data = await request('/cases', {}, next);
-        if (!Array.isArray(data) || !data.every(isCase)) throw new Error('Unexpected case list');
-        setCases(data);
+        const { items, cursor } = await readCasePage(next);
+        setCases(items);
+        setCursor(cursor);
         const linked = new URLSearchParams(window.location.search).get('saved');
         if (isUuid(linked)) {
           setSelectedId(linked);
-          const known = data.find((item) => item.id === linked);
+          const known = items.find((item) => item.id === linked);
           if (!known) {
             try {
               const linkedCase = await request(`/cases/${linked}`, {}, next);
@@ -124,12 +150,32 @@ export function CaseConsole({ fixtures }: { fixtures: SyntheticCase[] }) {
     event.preventDefault();
     const form = event.currentTarget;
     const fields = new FormData(form);
+    const body = JSON.stringify({
+      fixture_id: fields.get('fixture'), purpose: fields.get('purpose'), scope: fields.get('scope'),
+    });
+    const attempt = pendingCreation.current?.body === body
+      ? pendingCreation.current
+      : { body, key: crypto.randomUUID() };
+    pendingCreation.current = attempt;
     void perform(async () => {
       updateCase(await request('/cases', {
-        method: 'POST',
-        body: JSON.stringify({ fixture_id: fields.get('fixture'), purpose: fields.get('purpose'), scope: fields.get('scope') }),
+        method: 'POST', body, headers: { 'Idempotency-Key': attempt.key },
       }, active));
+      pendingCreation.current = null;
       form.reset();
+    });
+  }
+
+  function moreCases(active: Session) {
+    if (!cursor) return;
+    restorePaginationFocus.current = true;
+    void perform(async () => {
+      const next = await readCasePage(active, cursor);
+      setCases((previous) => {
+        const known = new Set(previous.map((item) => item.id));
+        return [...previous, ...next.items.filter((item) => !known.has(item.id))];
+      });
+      setCursor(next.cursor);
     });
   }
 
@@ -167,7 +213,7 @@ export function CaseConsole({ fixtures }: { fixtures: SyntheticCase[] }) {
           )}
           {cases.length > 0 && (
             <label>Kasus tersimpan
-              <select value={selected?.id ?? ''} onChange={(event) => {
+              <select ref={casePicker} value={selected?.id ?? ''} onChange={(event) => {
                 setSelectedId(event.target.value);
                 rememberSelection('saved', event.target.value);
                 setIssue('');
@@ -178,6 +224,7 @@ export function CaseConsole({ fixtures }: { fixtures: SyntheticCase[] }) {
               </select>
             </label>
           )}
+          {cursor && <button ref={loadMoreButton} type="button" onClick={() => moreCases(session)}>Muat kasus sebelumnya</button>}
           {selected ? (
             <>
               <p><a href={selectionUrl('saved', selected.id).href}>Tautan kasus tersimpan</a></p>

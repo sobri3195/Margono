@@ -1,3 +1,4 @@
+from concurrent.futures import ThreadPoolExecutor
 from hashlib import sha256
 from uuid import uuid4
 
@@ -68,7 +69,8 @@ def test_synthetic_case_with_scoped_sessions_and_immutable_csv(
             ).status_code
             == 404
         )
-        created = client.post("/api/v1/cases", json=payload, headers=owner)
+        case_key = {**owner, "Idempotency-Key": "create-fixture"}
+        created = client.post("/api/v1/cases", json=payload, headers=case_key)
         assert created.status_code == 201, created.text
         case = created.json()
         path = f"/api/v1/cases/{case['id']}"
@@ -141,6 +143,28 @@ def test_synthetic_case_with_scoped_sessions_and_immutable_csv(
         retrieved = client.get(evidence, headers=supervisor)
         assert retrieved.content == raw.encode()
         assert retrieved.headers["X-Content-SHA256"] == stored["sha256"]
+        with engine.connect() as db:
+            audit = (
+                db.execute(
+                    text("""
+                SELECT action, case_id, actor_id, import_id, correlation_id
+                FROM audit_events WHERE import_id = :import_id
+                ORDER BY occurred_at
+            """),
+                    {"import_id": stored["id"]},
+                )
+                .mappings()
+                .all()
+            )
+            assert [row.action for row in audit] == [
+                "import.confirmed",
+                "import.evidence_served",
+            ]
+            assert all(str(row.case_id) == case["id"] for row in audit)
+            assert str(audit[0].actor_id) == case["owner_id"]
+            assert audit[0].actor_id != audit[1].actor_id
+            assert str(audit[0].correlation_id) == first.headers["X-Correlation-ID"]
+            assert str(audit[1].correlation_id) == retrieved.headers["X-Correlation-ID"]
 
         assert (
             client.patch(f"{path}/status?status=closed", headers=owner).status_code
@@ -149,6 +173,9 @@ def test_synthetic_case_with_scoped_sessions_and_immutable_csv(
         closed = client.patch(f"{path}/status?status=closed", headers=supervisor)
         assert closed.status_code == 200, closed.text
         assert closed.json()["status"] == "closed" and closed.json()["closed_at"]
+        repeated = client.post("/api/v1/cases", headers=case_key, json=payload)
+        assert repeated.status_code == 201 and repeated.json() == case
+        assert client.get(path, headers=owner).json()["status"] == "closed"
         assert client.post(import_path, json=csv, headers=keyed).json() == stored
         assert (
             client.post(
@@ -261,6 +288,88 @@ def test_import_history_pages_through_legacy_rows(isolated_database, monkeypatch
         assert (
             client.get(
                 path, headers=headers, params={"before": str(uuid4())}
+            ).status_code
+            == 404
+        )
+
+
+def test_concurrent_case_creation_and_scoped_case_pagination(
+    isolated_database, monkeypatch
+):
+    config, engine, _ = isolated_database
+    command.upgrade(config, "head")
+    for username in ("owner", "other"):
+        monkeypatch.setattr("sys.argv", ["provision", username, "osint_analyst"])
+        monkeypatch.setattr(provision, "getpass", lambda _: "synthetic-test-only")
+        provision.main()
+
+    with TestClient(app) as client:
+
+        def login(username):
+            response = client.post(
+                "/api/v1/sessions",
+                json={
+                    "username": username,
+                    "password": "synthetic-test-only",
+                },
+            )
+            assert response.status_code == 201, response.text
+            return {
+                "Authorization": f"Bearer {response.json()['token']}",
+                "Idempotency-Key": "retry",
+            }
+
+        owner, other = login("owner"), login("other")
+        payload = {"fixture_id": "SYN-001", "purpose": "Simulation", "scope": "Fixture"}
+
+        def create(_):
+            return client.post("/api/v1/cases", json=payload, headers=owner)
+
+        with ThreadPoolExecutor(max_workers=2) as workers:
+            first, repeat = workers.map(create, range(2))
+        assert first.status_code == repeat.status_code == 201
+        assert first.json() == repeat.json()
+        case = first.json()
+        conflict = client.post(
+            "/api/v1/cases", json={**payload, "scope": "Other"}, headers=owner
+        )
+        assert (
+            conflict.status_code == 409
+            and conflict.json()["code"] == "idempotency_conflict"
+        )
+        separate = client.post("/api/v1/cases", json=payload, headers=other)
+        assert separate.status_code == 201 and separate.json()["id"] != case["id"]
+
+        with engine.begin() as db:
+            assert db.scalar(text("SELECT count(*) FROM cases")) == 2
+            assert (
+                db.scalar(
+                    text(
+                        "SELECT count(*) FROM audit_events WHERE action = 'case.created'"
+                    )
+                )
+                == 2
+            )
+            extra = db.scalar(
+                text("""
+                INSERT INTO cases (owner_id, purpose, scope, synthetic_fixture_id, created_at)
+                SELECT owner_id, 'Other fixture', 'Fixture', 'SYN-002', created_at FROM cases
+                WHERE id = :case RETURNING id
+            """),
+                {"case": case["id"]},
+            )
+        page = client.get("/api/v1/cases", params={"limit": 1}, headers=owner)
+        assert page.status_code == 200 and len(page.json()) == 1
+        cursor = page.headers["X-Next-Cursor"]
+        assert cursor == page.json()[0]["id"]
+        last = client.get(
+            "/api/v1/cases", params={"limit": 1, "before": cursor}, headers=owner
+        )
+        assert "X-Next-Cursor" not in last.headers
+        assert [cursor, last.json()[0]["id"]] == sorted([str(extra), case["id"]])
+        assert (
+            client.get(
+                "/api/v1/cases", params={"before": cursor}, headers=other
             ).status_code
             == 404
         )

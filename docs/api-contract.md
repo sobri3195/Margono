@@ -32,14 +32,14 @@ Permintaan `GET /api/v1/simulation/plans?seed=abc` menghasilkan HTTP 422 dan hea
 
 Klien menangani kegagalan berdasarkan status HTTP dan `code`. `message` ditujukan untuk tampilan. Format kesalahan yang sama dipakai untuk `404 not_found`, `404 case_not_found`, `405 method_not_allowed`, serta `500 internal_error`. Respons 405 menyertakan `Allow`. Detail input yang ditolak dan detail pengecualian internal tidak disertakan di respons.
 
-## Idempotensi operasi tulis mendatang
+## Idempotensi operasi tulis
 
-Endpoint simulasi saat ini bersifat baca-saja. Konvensi berikut berlaku saat endpoint tulis yang mendukung percobaan ulang ditambahkan.
+Endpoint katalog simulasi bersifat baca-saja. Konfirmasi impor memakai kunci wajib. Pembuatan kasus mendukung kunci opsional untuk kompatibilitas klien, dan web selalu mengirim kunci. Aturan berikut berlaku untuk endpoint tulis yang mendeklarasikan idempotensi.
 
-- `Idempotency-Key` wajib pada endpoint yang mendeklarasikannya. Nilainya 1–128 karakter ASCII dari `A–Z`, `a–z`, `0–9`, `.`, `_`, `:`, atau `-`. Kunci hilang atau tidak valid menghasilkan `422 invalid_request`.
-- Server memeriksa otorisasi sebelum membaca hasil lama. Ruang lingkup kunci mengikuti operasi dan resource yang dicantumkan pada endpoint. Job kasus menggunakan kombinasi Case ID, jenis job, dan kunci.
-- Server menyimpan fingerprint permintaan dan hasil secara atomik. Pengulangan dengan payload yang sama mengembalikan status dan body asli serta ID korelasi baru. Payload berbeda pada kunci yang sama menghasilkan `409 idempotency_conflict`. Jika permintaan awal masih berjalan, kembalikan `409 idempotency_in_progress` agar klien dapat mencoba ulang dengan kunci sama.
-- Dokumentasi tiap endpoint akan menetapkan masa berlaku kunci sebelum operasi diaktifkan.
+- Endpoint menetapkan apakah `Idempotency-Key` wajib atau opsional. Nilainya 1–128 karakter ASCII dari `A–Z`, `a–z`, `0–9`, `.`, `_`, `:`, atau `-`. Kunci wajib yang hilang atau kunci yang tidak valid menghasilkan `422 invalid_request`.
+- Server memeriksa otorisasi sebelum membaca hasil lama. Ruang lingkup kunci mengikuti operasi dan resource yang dicantumkan pada endpoint. Pembuatan kasus memakai pasangan operator dan kunci. Konfirmasi impor memakai pasangan Case ID dan kunci. Kontrak job yang direncanakan memakai Case ID, jenis job, dan kunci.
+- Server menyimpan fingerprint permintaan dan hasil secara atomik. Pengulangan dengan payload yang sama mengembalikan status dan body asli serta ID korelasi baru. Payload berbeda pada kunci yang sama menghasilkan `409 idempotency_conflict`. Permintaan simultan untuk pembuatan kasus dan konfirmasi impor diserialisasi di database. Retry membaca hasil setelah transaksi awal selesai.
+- Untuk simulasi lokal, receipt pembuatan kasus dan kunci konfirmasi mengikuti umur data pada database. Kebijakan kedaluwarsa produksi masih perlu ditetapkan.
 
 Contoh kontrak untuk pengajuan job sintetis di masa mendatang.
 
