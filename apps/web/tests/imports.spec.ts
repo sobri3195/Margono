@@ -285,7 +285,13 @@ test('resends an unconfirmed import with its original key only after the same pr
   }
   await preview('Fixture label');
   await page.getByRole('button', { name: 'Konfirmasi impor', exact: true }).click();
-  await expect(page.getByRole('alert')).toContainText('Konfirmasi impor gagal');
+  await expect(page.getByRole('status').filter({ hasText: 'Batch mungkin sudah tersimpan' })).toBeVisible();
+  const check = page.getByRole('button', { name: 'Periksa riwayat konfirmasi' });
+  await check.focus();
+  await expect(check).toHaveAccessibleDescription(/Hasil konfirmasi belum diketahui/);
+  await check.press('Enter');
+  await expect(page.getByRole('status').filter({ hasText: 'Hasil konfirmasi belum ditemukan di riwayat' })).toBeVisible();
+  expect(keys).toHaveLength(1);
   const picker = page.getByRole('combobox', { name: 'Kasus tersimpan' });
   await picker.selectOption(b);
   await picker.selectOption(a);

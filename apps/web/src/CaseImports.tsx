@@ -3,7 +3,7 @@ import { isUuid } from './api';
 import { isTimestamp } from './contracts';
 import { formatTimestamp } from './display';
 import { isObject, operatorResponse, request, RequestError, type Session } from './operatorApi';
-import { clearPendingWrite, readPendingWrite, savePendingWrite, writeFingerprint, type PendingWrite } from './pendingWrite';
+import { clearPendingWrite, isWriteRejection, readPendingWrite, savePendingWrite, writeFingerprint, type PendingWrite } from './pendingWrite';
 
 type Counts = { row_count: number; valid_count: number; invalid_count: number };
 type Result = Counts & { id: string; sha256: string };
@@ -84,6 +84,7 @@ async function loadConfirmation(path: string, key: string, session: Session, sig
 function importIssue(error: unknown, fallback: string): Issue {
   if (!(error instanceof RequestError)) return { message: fallback };
   const message = error.status === 422 ? 'Periksa format impor atau pilihan kolom.'
+    : error.status === 403 || error.status === 404 ? 'Kasus atau impor ini tidak dapat diakses.'
     : error.status === 409 ? 'Impor tidak dapat diproses untuk status kasus atau kunci ini.' : fallback;
   return { message, correlationId: error.correlationId };
 }
@@ -105,6 +106,7 @@ export function CaseImports({ caseId, session, canManageImports, caseOpen, onSes
   const canImport = canManageImports && caseOpen;
   const lifetime = useRef<AbortController>(null);
   const [pendingConfirmation, setPendingConfirmation] = useState(() => readPendingWrite(storageKey));
+  const [confirmationNotice, setConfirmationNotice] = useState('');
   const [file, setFile] = useState<ImportInput & { columns: string[] }>();
   const [manual, setManual] = useState('');
   const [column, setColumn] = useState('');
@@ -122,6 +124,7 @@ export function CaseImports({ caseId, session, canManageImports, caseOpen, onSes
   const finishConfirmation = useCallback((attempt: PendingWrite, saved: Result) => {
     if (!clearPendingWrite(storageKey, attempt)) return;
     setPendingConfirmation(undefined);
+    setConfirmationNotice('');
     setResult(saved);
     setInspection(undefined);
     setIssue(undefined);
@@ -235,11 +238,13 @@ export function CaseImports({ caseId, session, canManageImports, caseOpen, onSes
     }, 'Pratinjau impor gagal dimuat.');
   }
 
-  function confirm() {
+  function confirm(checkOnly = false) {
     if (!canManageImports) return;
     const body = visibleInspection && JSON.stringify(visibleInspection.payload);
+    setConfirmationNotice('');
     void perform(async (signal) => {
       let attempt = readPendingWrite(storageKey);
+      const recovering = Boolean(attempt);
       if (attempt) {
         const saved = await loadConfirmation(path, attempt.key, session, signal);
         signal.throwIfAborted();
@@ -248,6 +253,10 @@ export function CaseImports({ caseId, session, canManageImports, caseOpen, onSes
           finishConfirmation(attempt, saved);
           return;
         }
+      }
+      if (checkOnly) {
+        setConfirmationNotice('Hasil konfirmasi belum ditemukan di riwayat. Periksa lagi atau coba ulang dengan impor yang sama.');
+        return;
       }
       if (!canImport || !body) {
         setIssue({ message: canImport
@@ -267,18 +276,24 @@ export function CaseImports({ caseId, session, canManageImports, caseOpen, onSes
         savePendingWrite(storageKey, attempt);
         setPendingConfirmation(attempt);
       }
+      const submitted = attempt;
       const data = await request(path, {
-        method: 'POST', headers: { 'Idempotency-Key': attempt.key }, body, signal,
-      }, session);
+        method: 'POST', headers: { 'Idempotency-Key': submitted.key }, body, signal,
+      }, session).catch((error: unknown) => {
+        if (!recovering && isWriteRejection(error) && clearPendingWrite(storageKey, submitted)
+            && !signal.aborted) setPendingConfirmation(undefined);
+        throw error;
+      });
       signal.throwIfAborted();
       if (!isResult(data)) throw new Error('Unexpected import result');
       finishConfirmation(attempt, data);
-    }, 'Konfirmasi impor gagal. Coba lagi untuk memakai kunci impor yang sama.');
+    }, checkOnly ? 'Riwayat konfirmasi belum dapat diperiksa.' : 'Portal belum menerima respons konfirmasi yang dapat dibaca.');
   }
 
   function startNewImport(attempt: PendingWrite) {
     if (!clearPendingWrite(storageKey, attempt)) return;
     setPendingConfirmation(undefined);
+    setConfirmationNotice('');
     setIssue(undefined);
   }
 
@@ -338,6 +353,19 @@ export function CaseImports({ caseId, session, canManageImports, caseOpen, onSes
     <section aria-label="Impor label">
       <fieldset disabled={busy}>
         {issue && <p role="alert">{issue.message} {issue.correlationId && <code>{issue.correlationId}</code>}</p>}
+        <div className="operation-status" id="import-confirmation-status" role="status">
+          {canManageImports && pendingConfirmation && (
+            <p>{confirmationNotice || (busy
+              ? 'Menunggu respons konfirmasi…'
+              : 'Hasil konfirmasi belum diketahui. Batch mungkin sudah tersimpan. Periksa riwayat sebelum mencoba lagi.')}</p>
+          )}
+          {result && (
+            <>
+              <p>{result.row_count} baris tersimpan. <CountsSummary counts={result} />.</p>
+              <p>Import ID <code>{result.id}</code></p>
+            </>
+          )}
+        </div>
         {canImport && (
           <>
           <form onSubmit={preview}>
@@ -376,21 +404,15 @@ export function CaseImports({ caseId, session, canManageImports, caseOpen, onSes
                 </li>
               ))}
             </ul>
-            {!pendingConfirmation && <button type="button" onClick={confirm}>Konfirmasi impor</button>}
+            {!pendingConfirmation && <button type="button" onClick={() => confirm()}>Konfirmasi impor</button>}
           </>
         )}
         {canManageImports && pendingConfirmation && (
           <>
-            <p role="status">Hasil konfirmasi sebelumnya belum diketahui. Mulai impor baru hanya jika Anda memang ingin membuat batch lain.</p>
-            <button type="button" onClick={confirm}>Coba lagi konfirmasi impor</button>
+            <button type="button" aria-describedby="import-confirmation-status" onClick={() => confirm(true)}>Periksa riwayat konfirmasi</button>
+            <button type="button" onClick={() => confirm()}>Coba lagi konfirmasi impor</button>
             {canImport && <button type="button" onClick={() => startNewImport(pendingConfirmation)}>Mulai impor baru</button>}
           </>
-        )}
-        {result && (
-          <div role="status">
-            <p>{result.row_count} baris tersimpan. <CountsSummary counts={result} />.</p>
-            <p>Import ID <code>{result.id}</code></p>
-          </div>
         )}
         <h3>Riwayat impor</h3>
         {!history && !historyIssue && <p role="status">Memuat riwayat impor…</p>}

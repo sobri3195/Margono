@@ -6,7 +6,7 @@ import { CaseWorkflow, PortalJobs } from './CaseWorkflow';
 import { isTimestamp, type SyntheticCase } from './contracts';
 import { formatTimestamp, rememberSelection, selectionUrl } from './display';
 import { isObject, operatorResponse, request, RequestError, type Session } from './operatorApi';
-import { clearPendingWrite, readPendingWrite, savePendingWrite, writeFingerprint, type PendingWrite } from './pendingWrite';
+import { clearPendingWrite, isWriteRejection, readPendingWrite, savePendingWrite, writeFingerprint, type PendingWrite } from './pendingWrite';
 
 type Case = {
   id: string; owner_id: string; synthetic_fixture_id: string; purpose: string;
@@ -39,6 +39,7 @@ export function CaseConsole({ fixtures }: { fixtures: SyntheticCase[] }) {
   const [cases, setCases] = useState<Case[]>([]);
   const [cursor, setCursor] = useState<string | null>(null);
   const [pendingCreation, setPendingCreation] = useState<PendingWrite>();
+  const [creationNotice, setCreationNotice] = useState('');
   const currentSession = useRef<Session>(null);
   const casePicker = useRef<HTMLSelectElement>(null);
   const loadMoreButton = useRef<HTMLButtonElement>(null);
@@ -55,6 +56,7 @@ export function CaseConsole({ fixtures }: { fixtures: SyntheticCase[] }) {
       const id = new URLSearchParams(window.location.search).get('saved') ?? '';
       if (id === selectedId) return;
       setSelectedId(id);
+      setCreationNotice('');
     }
     window.addEventListener('popstate', handlePop);
     return () => window.removeEventListener('popstate', handlePop);
@@ -73,6 +75,7 @@ export function CaseConsole({ fixtures }: { fixtures: SyntheticCase[] }) {
     setCases([]);
     setCursor(null);
     setPendingCreation(undefined);
+    setCreationNotice('');
     restorePaginationFocus.current = false;
     setSelectedId('');
   }, []);
@@ -83,7 +86,7 @@ export function CaseConsole({ fixtures }: { fixtures: SyntheticCase[] }) {
     setIssueId(correlationId);
   }, [clearSession]);
 
-  async function perform(action: () => Promise<void>) {
+  async function perform(action: () => Promise<void>, fallback = 'Operasi gagal. Coba lagi.') {
     setBusy(true);
     setIssue('');
     setIssueId(null);
@@ -98,10 +101,12 @@ export function CaseConsole({ fixtures }: { fixtures: SyntheticCase[] }) {
         setIssue('Database lokal belum tersedia.');
       } else if (error instanceof RequestError && error.status === 422) {
         setIssue('Periksa format dan isian formulir.');
+      } else if (error instanceof RequestError && (error.status === 403 || error.status === 404)) {
+        setIssue('Kasus atau operasi ini tidak dapat diakses.');
       } else if (error instanceof RequestError && error.status === 409) {
-        setIssue('Operasi berbenturan dengan status kasus atau kunci impor.');
+        setIssue('Operasi berbenturan dengan status kasus atau kunci operasi.');
       } else {
-        setIssue('Operasi gagal. Coba lagi.');
+        setIssue(fallback);
       }
     } finally {
       setBusy(false);
@@ -157,20 +162,27 @@ export function CaseConsole({ fixtures }: { fixtures: SyntheticCase[] }) {
 
   function createCase(event: FormEvent<HTMLFormElement>, active: Session) {
     event.preventDefault();
+    const checkOnly = (event.nativeEvent as SubmitEvent).submitter?.getAttribute('value') === 'check';
     const form = event.currentTarget;
     const fields = new FormData(form);
     const purpose = fields.get('purpose');
     const scope = fields.get('scope');
     const body = purpose && scope ? JSON.stringify({ fixture_id: fields.get('fixture'), purpose, scope }) : undefined;
     const storageKey = creationStorageKey(active);
+    setCreationNotice('');
     void perform(async () => {
       let attempt = readPendingWrite(storageKey);
+      const recovering = Boolean(attempt);
       let current: unknown = null;
       if (attempt) {
         current = await request('/cases/creation-receipt', { headers: { 'Idempotency-Key': attempt.key } }, active);
       }
       if (currentSession.current !== active) return;
       if (current === null) {
+        if (checkOnly) {
+          setCreationNotice('Kasus belum ditemukan. Untuk mencoba lagi, masukkan fixture dan isian yang sama.');
+          return;
+        }
         if (!body) {
           setIssue('Hasil belum tercatat. Pilih fixture dan isi kembali tujuan serta ruang lingkup yang sama untuk mencoba lagi.');
           return;
@@ -186,9 +198,14 @@ export function CaseConsole({ fixtures }: { fixtures: SyntheticCase[] }) {
           savePendingWrite(storageKey, attempt);
           setPendingCreation(attempt);
         }
+        const submitted = attempt;
         const receipt = await request('/cases', {
-          method: 'POST', body, headers: { 'Idempotency-Key': attempt.key },
-        }, active);
+          method: 'POST', body, headers: { 'Idempotency-Key': submitted.key },
+        }, active).catch((error: unknown) => {
+          if (!recovering && isWriteRejection(error) && clearPendingWrite(storageKey, submitted)
+              && currentSession.current === active) setPendingCreation(undefined);
+          throw error;
+        });
         if (!isCase(receipt)) throw new Error('Unexpected case receipt');
         current = await request(`/cases/${receipt.id}`, {}, active);
         if (!isCase(current) || current.id !== receipt.id) throw new Error('Unexpected current case');
@@ -198,13 +215,15 @@ export function CaseConsole({ fixtures }: { fixtures: SyntheticCase[] }) {
       if (!clearPendingWrite(storageKey, attempt)) return;
       setPendingCreation(undefined);
       updateCase(current);
+      if (recovering) setCreationNotice(`Kasus ditemukan. Status saat ini ${current.status === 'open' ? 'terbuka' : 'ditutup'}.`);
       form.reset();
-    });
+    }, checkOnly ? 'Hasil pembuatan belum dapat diperiksa.' : 'Portal belum menerima respons pembuatan yang dapat dibaca.');
   }
 
   function startNewCase(active: Session, pending: PendingWrite) {
     if (!clearPendingWrite(creationStorageKey(active), pending)) return;
     setPendingCreation(undefined);
+    setCreationNotice('');
     setIssue('');
     setIssueId(null);
   }
@@ -244,6 +263,11 @@ export function CaseConsole({ fixtures }: { fixtures: SyntheticCase[] }) {
           })}>Keluar</button>
           {session.roles.some((role) => caseRoles.includes(role)) && fixtures.length > 0 && (
             <form onSubmit={(event) => createCase(event, session)}>
+              <p className="operation-status" id="case-creation-status" role="status">
+                {creationNotice || (pendingCreation && (busy
+                  ? 'Menunggu respons pembuatan…'
+                  : 'Hasil pembuatan belum diketahui. Kasus mungkin sudah tersimpan. Periksa hasil sebelum mencoba lagi.'))}
+              </p>
               <label>Fixture kasus
                 <select name="fixture" required>
                   {fixtures.map((item) => <option key={item.case_id} value={item.case_id}>{item.case_id} · {item.label}</option>)}
@@ -253,8 +277,8 @@ export function CaseConsole({ fixtures }: { fixtures: SyntheticCase[] }) {
               <label>Ruang lingkup <input name="scope" maxLength={500} required /></label>
               {pendingCreation ? (
                 <>
-                  <p role="status">Hasil pembuatan sebelumnya belum diketahui. Mulai pembuatan baru hanya jika Anda memang ingin membuat kasus lain.</p>
-                  <button type="submit" formNoValidate>Coba lagi pembuatan kasus</button>
+                  <button type="submit" name="recovery" value="check" aria-describedby="case-creation-status" formNoValidate>Periksa hasil pembuatan</button>
+                  <button type="submit" name="recovery" value="retry" formNoValidate>Coba lagi pembuatan kasus</button>
                   <button type="button" onClick={() => startNewCase(session, pendingCreation)}>Mulai pembuatan baru</button>
                 </>
               ) : <button type="submit">Buat kasus</button>}
@@ -265,6 +289,7 @@ export function CaseConsole({ fixtures }: { fixtures: SyntheticCase[] }) {
               <select ref={casePicker} value={selected?.id ?? ''} onChange={(event) => {
                 setSelectedId(event.target.value);
                 rememberSelection('saved', event.target.value);
+                setCreationNotice('');
                 setIssue('');
                 setIssueId(null);
               }}>

@@ -58,12 +58,20 @@ test('recovers a committed case after reload and login with a read-only receipt 
   await login();
   await fillCase();
   await page.getByRole('button', { name: 'Buat kasus', exact: true }).click();
-  await expect(page.getByRole('alert')).toHaveText('Operasi gagal. Coba lagi.');
+  await expect(page.getByRole('status').filter({ hasText: 'Kasus mungkin sudah tersimpan' })).toBeVisible();
   await page.reload();
   await login();
   await expect(page.getByLabel('Tujuan')).toHaveValue('');
   await expect(page.getByRole('button', { name: 'Buat kasus', exact: true })).toHaveCount(0);
-  await page.getByRole('button', { name: 'Coba lagi pembuatan kasus' }).click();
+  const check = page.getByRole('button', { name: 'Periksa hasil pembuatan' });
+  await page.getByLabel('Ruang lingkup').focus();
+  await page.keyboard.press('Tab');
+  await expect(check).toBeFocused();
+  await expect(check).toHaveAccessibleDescription(/Hasil pembuatan belum diketahui/);
+  const accessibility = await new AxeBuilder({ page }).withTags(['wcag2a', 'wcag2aa', 'wcag21aa']).analyze();
+  expect(accessibility.violations).toEqual([]);
+  await check.press('Enter');
+  await expect(page.getByRole('status').filter({ hasText: 'Kasus ditemukan. Status saat ini ditutup.' })).toBeVisible();
   await expect(page.getByLabel('Kasus tersimpan')).toHaveValue(a);
   await expect(page.getByText('Ditutup', { exact: true })).toBeVisible();
   await expect(page.getByLabel('CSV sintetis')).toHaveCount(0);
@@ -98,6 +106,9 @@ test('retries a missing receipt with the same key and waits for the current case
   await page.getByRole('button', { name: 'Buat kasus', exact: true }).click();
   const retry = page.getByRole('button', { name: 'Coba lagi pembuatan kasus' });
   await expect(retry).toBeEnabled();
+  await page.getByRole('button', { name: 'Periksa hasil pembuatan' }).click();
+  await expect(page.getByRole('status').filter({ hasText: 'Kasus belum ditemukan' })).toBeVisible();
+  expect(keys).toHaveLength(1);
   await page.getByLabel('Ruang lingkup').fill('Other fixture');
   await retry.click();
   await expect(page.getByRole('alert')).toHaveText(/Isian berbeda/);
@@ -112,6 +123,23 @@ test('retries a missing receipt with the same key and waits for the current case
   await expect(page.getByLabel('CSV sintetis')).toHaveCount(0);
   expect(keys[0]).toBeTruthy();
   expect(keys).toEqual([keys[0], keys[0]]);
+});
+
+test('shows a confirmed request rejection without asking the operator to recover it', async ({ page }) => {
+  await page.route('**/api/v1/cases', (route) => route.request().method() === 'POST'
+    ? route.fulfill({ status: 422, json: { code: 'invalid_request' } })
+    : route.fulfill({ json: [] }));
+  await page.goto('/');
+  await page.getByLabel('Nama pengguna').fill('operator');
+  await page.getByLabel('Kata sandi').fill('synthetic-password');
+  await page.getByRole('button', { name: 'Masuk' }).click();
+  await page.getByLabel('Tujuan').fill('Synthetic test');
+  await page.getByLabel('Ruang lingkup').fill('Fixture');
+  const create = page.getByRole('button', { name: 'Buat kasus', exact: true });
+  await create.click();
+  await expect(page.getByRole('alert')).toHaveText('Periksa format dan isian formulir.');
+  await expect(page.getByRole('button', { name: 'Periksa hasil pembuatan' })).toHaveCount(0);
+  await expect(create).toBeEnabled();
 });
 
 test('older cases are reachable using the keyboard with the server cursor', async ({ page }) => {
