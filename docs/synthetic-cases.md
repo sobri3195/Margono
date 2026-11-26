@@ -28,11 +28,17 @@ Jalankan worker di terminal terpisah dari API. Keduanya memakai `MARGONO_DATABAS
 
 Opsi `--once` mengerjakan job yang sudah bisa dijalankan lalu keluar. Job yang dijadwalkan untuk retry tetap tersimpan di PostgreSQL. Untuk batch dengan baris valid, tekan **Antrekan sumber sintetis** lalu **Muat aktivitas kasus** untuk melihat status. Job sumber yang menunggu dapat dijeda atau dibatalkan. Job yang dijeda dapat dilanjutkan dan job yang gagal dapat diulang. Worker memeriksa kembali bahwa kasus terbuka sebelum membuat bukti. Commit hasil menjadi checkpoint satu langkah dan melekat pada satu Job ID. Sumber fixture hanya menghasilkan indikator `margono.test` dan metadata sintetis.
 
-OSINT Analyst pemilik, kolaborator OSINT Analyst dan Supervisor dapat meninjau temuan. Catat keputusan dan konteks bukti. Keputusan tersimpan tidak dapat ditimpa oleh operator kedua. Laporan eksekutif memuat ringkasan. Laporan teknis memuat detail temuan dan bukti sintetis yang sesuai Case ID. Forensic Examiner dapat membuka laporan teknis pada kasus USB yang dapat diaksesnya. Panel **Pekerjaan portal** menampilkan job dalam cakupan akun dan hitungan kegagalan saat dimuat.
+OSINT Analyst pemilik, kolaborator OSINT Analyst dan Supervisor dapat meninjau temuan. **Muat aktivitas kasus** membuka antrean **Menunggu review**, jumlah temuan yang cocok, dan daftar job. Gunakan **Muat temuan berikutnya** atau **Muat pekerjaan berikutnya** untuk membuka halaman tambahan. Filter status membuka temuan yang sudah diputuskan. Catat keputusan dan konteks bukti. Keputusan tersimpan tidak dapat ditimpa oleh operator kedua. Laporan eksekutif memuat ringkasan. Laporan teknis memuat detail temuan dan bukti sintetis yang sesuai Case ID. Forensic Examiner dapat membuka laporan teknis pada kasus USB yang dapat diaksesnya.
+
+Panel **Pekerjaan portal** tersedia untuk OSINT Analyst, Forensic Examiner, dan Supervisor. Daftar mengikuti akses kasus. Panel menampilkan hitungan kegagalan dan memberi tahu pengguna jika daftar hanya memuat sebagian dari total pekerjaan. OSINT Analyst dan Supervisor juga melihat jumlah temuan menunggu review. **Buka kasus** membuka kasus dari aktivitas tanpa meminta login ulang selama sesi masih aktif.
 
 ## Simulasi USB di web
 
 Buka kasus dari fixture USB dengan akun Forensic Examiner yang berhak membacanya. Buka **Muat sesi perangkat**, baca disclosure dan ruang lingkup, lalu catat persetujuan atau penolakan. Hanya sesi yang disetujui bisa membuat job. Simulasi mencakup metadata Android, iPhone yang tidak didukung, penolakan, pencabutan, serta koneksi Android yang terputus. Pencabutan membatalkan job yang belum menerbitkan hasil. Worker dan pencabutan menggunakan kunci transaksi pada kasus yang sama. Hasil yang sudah disimpan tetap menjadi bagian riwayat kasus.
+
+Jika respons keputusan hilang, **Periksa keputusan** membaca keputusan asli berdasarkan kunci operasi. **Coba lagi keputusan** mengirim keputusan yang sama dengan kunci asli jika hasil belum tersedia. Referensi tersimpan per operator dan Case ID selama sesi tab, termasuk setelah berpindah kasus, reload, dan login ulang di tab tersebut. Setelah hasil diketahui, dialog persetujuan dapat dipakai untuk mencatat keputusan baru secara sengaja.
+
+Pada kasus terbuka dengan persetujuan aktif, Forensic Examiner dapat memilih **Ulangi mock scan** di aktivitas kasus untuk mengantrekan kembali Job ID yang gagal. Pencabutan memblokir retry. Fixture putus koneksi tetap mensimulasikan putus koneksi pada percobaan berikutnya.
 
 ## API
 
@@ -53,6 +59,7 @@ Buka kasus dari fixture USB dengan akun Forensic Examiner yang berhak membacanya
 | Pantau dan kontrol job | `GET /api/v1/jobs`, `GET /api/v1/cases/{id}/jobs`, dan `PATCH /api/v1/cases/{id}/jobs/{job_id}?action=pause` (pilihan `resume`, `cancel`, `retry`) |
 | Temuan dan dua laporan | `GET /api/v1/cases/{id}/findings`, `PATCH /api/v1/cases/{id}/findings/{finding_id}/review`, dan `GET /api/v1/cases/{id}/reports/{executive\|technical}` |
 | Persetujuan dan scan sintetis | `GET` dan `POST /api/v1/cases/{id}/devices`, serta `POST` pada `/devices/{session_id}/jobs` dan `/devices/{session_id}/revoke` |
+| Pulihkan keputusan consent | `GET /api/v1/cases/{id}/devices/decision` dengan `Idempotency-Key` |
 
 Gunakan `Authorization: Bearer <token>` setelah login. Untuk membuat kasus, web mengirim `Idempotency-Key` baru dan memakai kunci yang sama saat mencoba ulang payload yang sama. Klien API lama tetap bisa membuat kasus tanpa header tersebut. Jika kunci dikirim, percobaan ulang oleh operator yang sama mengembalikan `201` dan respons asli, termasuk setelah kasus ditutup. Perubahan payload dengan kunci yang sama menghasilkan `409 idempotency_conflict`. Tujuan dan ruang lingkup dengan karakter kontrol menghasilkan `422` sebelum transaksi.
 
@@ -61,6 +68,8 @@ Jika respons hilang, browser menyimpan kunci dan sidik jari operasi selama sesi 
 Jika portal menampilkan **Hasil belum diketahui**, kasus atau batch mungkin sudah tersimpan. Pilih **Periksa hasil pembuatan** untuk membuka status kasus terbaru atau **Periksa riwayat konfirmasi** untuk mencari batch berdasarkan kunci asli, termasuk jika batch sudah berada di halaman riwayat berikutnya. Kedua tombol hanya membaca hasil yang sudah tersimpan. Portal juga memeriksa batch saat kasus dibuka kembali. Jika hasil belum ditemukan, masukkan kembali isian yang sama atau pratinjau ulang impor yang sama, lalu pilih **Coba lagi**. Gunakan **Mulai pembuatan baru** atau **Mulai impor baru** untuk melepas referensi sebelumnya dan memulai operasi lain secara sengaja.
 
 Daftar kasus tetap mengirim array. Jika halaman berikutnya tersedia, gunakan nilai header `X-Next-Cursor` sebagai parameter `before`. Tombol **Muat kasus sebelumnya** mengikuti cursor itu dan mempertahankan pilihan saat ini.
+
+Daftar job per kasus dan temuan juga mengirim array. Gunakan `limit` sampai 100 dan baca `X-Total-Count` untuk jumlah yang cocok dengan filter. Gunakan `X-Next-Cursor` sebagai `before` untuk job atau `after` untuk temuan. API portal mengirim `X-Total-Count`, `X-Failed-Count`, serta `X-Pending-Review-Count` bagi peran yang berhak meninjau temuan.
 
 Badan impor berupa JSON berisi `content`, `column`, dan `format`. Gunakan `csv` untuk teks UTF-8, `xlsx` untuk file base64, dan `manual` untuk label manual yang diserialkan sebagai CSV oleh portal. Jika `format` tidak dikirim, API memakai CSV. Bukti dikirim sebagai lampiran byte dan menyertakan `X-Content-SHA256`.
 

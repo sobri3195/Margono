@@ -81,6 +81,18 @@ def get_session(db: Database, case_id: UUID, session_id: UUID):
     return result
 
 
+def find_decision(db: Database, case_id: UUID, key: str):
+    return db.execute(
+        text("""
+        SELECT ss.id, s.examiner_id, (SELECT status FROM consent_decisions
+            WHERE consent_id = ss.consent_id AND status IN ('granted', 'declined')) AS initial_status
+        FROM synthetic_device_sessions ss JOIN device_sessions s ON s.id = ss.id
+        WHERE ss.case_id = :case AND ss.creation_key = :key
+    """),
+        {"case": case_id, "key": key},
+    ).one_or_none()
+
+
 @router.get("/cases/{case_id}/devices")
 def case_devices(case_id: UUID, db: Database, user: CurrentOperator):
     _, fixture = device_case(db, user, case_id)
@@ -97,6 +109,18 @@ def case_devices(case_id: UUID, db: Database, user: CurrentOperator):
     }
 
 
+@router.get("/cases/{case_id}/devices/decision")
+def recover_decision(
+    case_id: UUID, key: IdempotencyKey, db: Database, user: CurrentOperator
+):
+    require_examiner(user)
+    device_case(db, user, case_id)
+    prior = find_decision(db, case_id, key)
+    if prior is None or prior.examiner_id != user.id:
+        return None
+    return device_view(get_session(db, case_id, prior.id))
+
+
 @router.post("/cases/{case_id}/devices", status_code=201)
 def decide_consent(
     case_id: UUID,
@@ -108,15 +132,7 @@ def decide_consent(
 ):
     require_examiner(user)
     case, fixture = device_case(db, user, case_id, lock=True)
-    prior = db.execute(
-        text("""
-        SELECT ss.id, s.examiner_id, (SELECT status FROM consent_decisions
-            WHERE consent_id = ss.consent_id AND status IN ('granted', 'declined')) AS initial_status
-        FROM synthetic_device_sessions ss JOIN device_sessions s ON s.id = ss.id
-        WHERE ss.case_id = :case AND ss.creation_key = :key
-    """),
-        {"case": case_id, "key": key},
-    ).one_or_none()
+    prior = find_decision(db, case_id, key)
     if prior is not None:
         if prior.initial_status != payload.status or prior.examiner_id != user.id:
             raise api_error(

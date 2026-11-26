@@ -152,7 +152,8 @@ test('reviews a source job and opens both reports from the same saved case', asy
   function jobData() {
     return {
       id: job, case_id: a, import_id: batch, kind: 'synthetic_source',
-      status: 'completed', attempts: 1, created_at: timestamp, failure_code: null, scheduled_at: null, review_pending: !verified,
+      status: 'completed', attempts: 1, created_at: timestamp, failure_code: null, scheduled_at: null,
+      review_pending: !verified, consent_active: false,
     };
   }
   function findingData() {
@@ -171,8 +172,14 @@ test('reviews a source job and opens both reports from the same saved case', asy
     queued = true;
     return route.fulfill({ status: 201, json: jobData() });
   });
-  await page.route(`**/cases/${a}/jobs`, (route) => route.fulfill({ json: queued ? [jobData()] : [] }));
-  await page.route(`**/cases/${a}/findings`, (route) => route.fulfill({ json: queued ? [findingData()] : [] }));
+  await page.route(`**/cases/${a}/jobs?*`, (route) => route.fulfill({
+    headers: { 'X-Total-Count': queued ? '1' : '0' }, json: queued ? [jobData()] : [],
+  }));
+  await page.route(`**/cases/${a}/findings?*`, (route) => {
+    const status = new URL(route.request().url()).searchParams.get('verification');
+    const items = queued && status === findingData().verification ? [findingData()] : [];
+    return route.fulfill({ headers: { 'X-Total-Count': String(items.length) }, json: items });
+  });
   await page.route(`**/cases/${a}/collaborators`, (route) => route.fulfill({ json: [] }));
   await page.route(`**/cases/${a}/findings/${finding}/review`, (route) => {
     expect(route.request().postDataJSON()).toEqual({
@@ -199,6 +206,8 @@ test('reviews a source job and opens both reports from the same saved case', asy
   await expect(page.getByText('margono.test', { exact: true })).toBeVisible();
   await page.getByLabel('Catatan relevansi dan batasan').fill('Bukti dan batasan diperiksa');
   await page.getByRole('button', { name: 'Simpan keputusan' }).click();
+  await expect(page.getByText('0 dari 0 temuan')).toBeVisible();
+  await page.getByLabel('Status review').selectOption('verified');
   await expect(page.getByText('Bukti dan batasan diperiksa')).toBeVisible();
   for (const name of ['Laporan eksekutif', 'Laporan teknis']) {
     await page.getByRole('button', { name }).click();

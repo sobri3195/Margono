@@ -5,7 +5,7 @@ from json import loads
 from typing import Annotated, Literal
 from uuid import UUID
 
-from fastapi import APIRouter, Query, Request
+from fastapi import APIRouter, Query, Request, Response
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy import text
 
@@ -22,7 +22,7 @@ from .operations import (
     visible_case,
     write_audit,
 )
-from .synthetic_worker import FIXTURES, SOURCE_TASK, defer_job
+from .synthetic_worker import DEVICE_TASK, FIXTURES, SOURCE_TASK, defer_job
 
 router = APIRouter()
 
@@ -33,14 +33,24 @@ JOB_COLUMNS = """
         WHEN q.status = 'failed' THEN 'failed'
         ELSE 'queued' END AS status,
     COALESCE(q.attempts, 0) AS attempts, q.scheduled_at,
-    EXISTS (SELECT 1 FROM synthetic_findings f WHERE f.job_id = j.id AND f.verification = 'pending') AS review_pending
+    EXISTS (SELECT 1 FROM synthetic_findings f WHERE f.job_id = j.id AND f.verification = 'pending') AS review_pending,
+    EXISTS (
+        SELECT 1 FROM synthetic_device_sessions s JOIN consent_records c ON c.id = s.consent_id
+        WHERE s.id = j.device_session_id AND c.status = 'granted'
+    ) AS consent_active
 """
 JOB_FROM = " FROM jobs j LEFT JOIN procrastinate_jobs q ON q.id = j.queue_id "
-FINDINGS = """
+FINDINGS_SCOPE = (
+    " FROM synthetic_findings f JOIN jobs j ON j.id = f.job_id WHERE j.case_id = :case"
+)
+FINDINGS = (
+    """
     SELECT f.id, j.id AS job_id, j.import_id, f.evidence, f.evidence_sha256,
            f.threat_status, f.severity, f.verification, f.review_note, f.reviewed_at
-    FROM synthetic_findings f JOIN jobs j ON j.id = f.job_id WHERE j.case_id = :case
 """
+    + FINDINGS_SCOPE
+)
+PageLimit = Annotated[int, Query(ge=1, le=100)]
 
 
 class Review(BaseModel):
@@ -220,47 +230,116 @@ def queue_source(
     return read_job(db, job_id)
 
 
-@router.get("/cases/{case_id}/jobs")
-def case_jobs(case_id: UUID, db: Database, user: CurrentOperator):
-    visible_case(db, user, case_id)
+def activity_page(db: Database, response: Response, *, count, items, order, params):
+    # Counts and items come from one PostgreSQL snapshot, including an empty page.
+    rows = (
+        db.execute(
+            text(f"""
+            SELECT tally.item_total, page.*
+            FROM ({count}) tally LEFT JOIN LATERAL ({items}) page ON TRUE
+            ORDER BY {order}
+        """),
+            params,
+        )
+        .mappings()
+        .all()
+    )
+    response.headers["X-Total-Count"] = str(rows[0]["item_total"])
+    size = params["limit"] - 1
+    if len(rows) > size:
+        response.headers["X-Next-Cursor"] = str(rows[size - 1]["id"])
     return [
-        dict(row)
-        for row in db.execute(
-            text(
-                "SELECT "
-                + JOB_COLUMNS
-                + JOB_FROM
-                + """
-            WHERE j.case_id = :case AND j.kind IN ('synthetic_source', 'synthetic_device')
-            ORDER BY j.created_at DESC, j.id DESC LIMIT 100
-        """
-            ),
-            {"case": case_id},
-        ).mappings()
+        {key: value for key, value in row.items() if key != "item_total"}
+        for row in rows[:size]
+        if row["id"] is not None
     ]
 
 
+@router.get("/cases/{case_id}/jobs")
+def case_jobs(
+    case_id: UUID,
+    response: Response,
+    db: Database,
+    user: CurrentOperator,
+    before: UUID | None = None,
+    limit: PageLimit = 100,
+):
+    visible_case(db, user, case_id)
+    scope = " WHERE j.case_id = :case AND j.kind IN ('synthetic_source', 'synthetic_device')"
+    params = {"case": case_id, "limit": limit + 1}
+    cutoff = ""
+    if before is not None:
+        at = db.scalar(
+            text("SELECT j.created_at FROM jobs j" + scope + " AND j.id = :cursor"),
+            {"case": case_id, "cursor": before},
+        )
+        if at is None:
+            raise api_error(404, "job_not_found", "Job cursor not found.")
+        cutoff = " AND (j.created_at, j.id) < (:at, :cursor)"
+        params.update(at=at, cursor=before)
+    return activity_page(
+        db,
+        response,
+        count="SELECT count(*) AS item_total FROM jobs j" + scope,
+        items="SELECT "
+        + JOB_COLUMNS
+        + JOB_FROM
+        + scope
+        + cutoff
+        + " ORDER BY j.created_at DESC, j.id DESC LIMIT :limit",
+        order="page.created_at DESC, page.id DESC",
+        params=params,
+    )
+
+
 @router.get("/jobs")
-def portal_jobs(db: Database, user: CurrentOperator):
+def portal_jobs(response: Response, db: Database, user: CurrentOperator):
     if not (CASE_OPERATORS | {"supervisor"}) & user.roles:
+        response.headers["X-Total-Count"] = "0"
+        response.headers["X-Failed-Count"] = "0"
         return []
     condition = case_condition(user)
-    return [
-        dict(row)
-        for row in db.execute(
-            text(
-                "SELECT "
-                + JOB_COLUMNS
-                + JOB_FROM
-                + f"""
-            WHERE j.kind IN ('synthetic_source', 'synthetic_device') AND j.case_id IN (
-                SELECT id FROM cases WHERE synthetic_fixture_id IS NOT NULL AND ({condition})
-            ) AND (j.status IN ('queued', 'paused', 'failed') OR j.created_at > now() - interval '24 hours')
-            ORDER BY (j.status IN ('queued', 'paused', 'failed')) DESC, j.created_at DESC, j.id DESC LIMIT 100
-        """
-            ),
+    rows = (
+        db.execute(
+            text(f"""
+            WITH scoped AS (
+                SELECT {JOB_COLUMNS} {JOB_FROM}
+                WHERE j.kind IN ('synthetic_source', 'synthetic_device') AND j.case_id IN (
+                    SELECT id FROM cases WHERE synthetic_fixture_id IS NOT NULL AND ({condition})
+                )
+            ), visible AS (
+                SELECT *, status IN ('queued', 'running', 'paused', 'failed') AS active
+                FROM scoped
+                WHERE status IN ('queued', 'running', 'paused', 'failed')
+                    OR created_at > now() - interval '24 hours' OR review_pending
+            ), totals AS (
+                SELECT count(*) AS total,
+                       count(*) FILTER (WHERE status = 'failed') AS failed_count,
+                       count(*) FILTER (WHERE review_pending) AS pending_count
+                FROM visible
+            )
+            SELECT totals.*, page.* FROM totals LEFT JOIN LATERAL (
+                SELECT * FROM visible ORDER BY active DESC, created_at DESC, id DESC LIMIT 100
+            ) page ON TRUE
+            ORDER BY page.active DESC, page.created_at DESC, page.id DESC
+        """),
             {"owner": user.id},
-        ).mappings()
+        )
+        .mappings()
+        .all()
+    )
+    response.headers["X-Total-Count"] = str(rows[0]["total"])
+    response.headers["X-Failed-Count"] = str(rows[0]["failed_count"])
+    if {"osint_analyst", "supervisor"} & user.roles:
+        response.headers["X-Pending-Review-Count"] = str(rows[0]["pending_count"])
+    return [
+        {
+            key: value
+            for key, value in row.items()
+            if key not in {"total", "failed_count", "pending_count", "active"}
+        }
+        for row in rows
+        if row["id"] is not None
     ]
 
 
@@ -274,26 +353,31 @@ def control_job(
     action: Literal["pause", "resume", "cancel", "retry"],
 ):
     case = visible_case(db, user, case_id, lock=True)
-    if not {"supervisor", "osint_analyst"} & user.roles:
-        raise api_error(
-            403,
-            "job_access_denied",
-            "The OSINT Analyst or Supervisor role is required.",
-        )
     job = db.execute(
         text("""
-        SELECT j.status, j.import_id, j.queue_id, q.status AS queue_status
+        SELECT j.kind, j.status, j.import_id, j.queue_id, q.status AS queue_status, c.status AS consent_status
         FROM jobs j JOIN procrastinate_jobs q ON q.id = j.queue_id
-        WHERE j.id = :job AND j.case_id = :case AND j.kind = 'synthetic_source'
+        LEFT JOIN synthetic_device_sessions s ON s.id = j.device_session_id
+        LEFT JOIN consent_records c ON c.id = s.consent_id
+        WHERE j.id = :job AND j.case_id = :case AND j.kind IN ('synthetic_source', 'synthetic_device')
         FOR UPDATE OF j, q
     """),
         {"job": job_id, "case": case_id},
     ).one_or_none()
     if job is None:
         raise api_error(404, "job_not_found", "Job not found.")
+    device_job = job.kind == "synthetic_device"
+    allowed = {"forensic_examiner"} if device_job else {"supervisor", "osint_analyst"}
+    if not allowed & user.roles:
+        raise api_error(403, "job_access_denied", "This role cannot control the job.")
+    if device_job and action != "retry":
+        raise api_error(409, "job_transition_denied", "Device jobs support retry only.")
 
     params = {"job": job_id, "queue": job.queue_id}
     status = None
+    failed = (job.status == "failed" and job.queue_status not in {"todo", "doing"}) or (
+        job.status == "queued" and job.queue_status == "failed"
+    )
     if (
         action in {"pause", "cancel"}
         and job.status == "queued"
@@ -306,10 +390,16 @@ def control_job(
     elif action == "cancel" and job.status == "paused":
         status = "cancelled"
     elif (action == "resume" and job.status == "paused") or (
-        action == "retry" and (job.status == "failed" or job.queue_status == "failed")
+        action == "retry" and failed
     ):
         require_open(case)
-        params["queue"] = defer_job(db, job_id, SOURCE_TASK)
+        if device_job and job.consent_status != "granted":
+            raise api_error(
+                409, "consent_required", "A granted consent is required to retry."
+            )
+        params["queue"] = defer_job(
+            db, job_id, DEVICE_TASK if device_job else SOURCE_TASK
+        )
         db.execute(
             text(
                 "UPDATE jobs SET queue_id = :queue, failure_code = NULL WHERE id = :job"
@@ -327,8 +417,9 @@ def control_job(
         text("UPDATE jobs SET status = :status WHERE id = :job"),
         {**params, "status": status},
     )
+    kind = "device" if device_job else "source"
     write_audit(
-        db, request, user.id, f"job.source.{action}", case_id, import_id=job.import_id
+        db, request, user.id, f"job.{kind}.{action}", case_id, import_id=job.import_id
     )
     return read_job(db, job_id)
 
@@ -340,23 +431,39 @@ def finding_view(row) -> dict:
 @router.get("/cases/{case_id}/findings")
 def findings(
     case_id: UUID,
+    response: Response,
     db: Database,
     user: CurrentOperator,
     verification: Annotated[
         Literal["pending", "verified", "inconclusive", "rejected"] | None, Query()
     ] = None,
+    after: UUID | None = None,
+    limit: PageLimit = 100,
 ):
     visible_case(db, user, case_id)
-    return [
-        finding_view(row)
-        for row in db.execute(
-            text(
-                FINDINGS
-                + " AND (CAST(:status AS text) IS NULL OR f.verification = :status) ORDER BY f.id LIMIT 100"
-            ),
-            {"case": case_id, "status": verification},
-        ).mappings()
-    ]
+    selector = " AND (CAST(:status AS text) IS NULL OR f.verification = :status)"
+    params = {"case": case_id, "status": verification, "limit": limit + 1}
+    cutoff = ""
+    if after is not None:
+        if (
+            db.scalar(
+                text("SELECT f.id" + FINDINGS_SCOPE + " AND f.id = :cursor"),
+                {"case": case_id, "cursor": after},
+            )
+            is None
+        ):
+            raise api_error(404, "finding_not_found", "Finding cursor not found.")
+        cutoff = " AND f.id > :cursor"
+        params["cursor"] = after
+    rows = activity_page(
+        db,
+        response,
+        count="SELECT count(*) AS item_total" + FINDINGS_SCOPE + selector,
+        items=FINDINGS + selector + cutoff + " ORDER BY f.id LIMIT :limit",
+        order="page.id",
+        params=params,
+    )
+    return [finding_view(row) for row in rows]
 
 
 @router.patch("/cases/{case_id}/findings/{finding_id}/review")
