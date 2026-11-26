@@ -1,5 +1,5 @@
 import asyncio
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import pytest
 from alembic import command
@@ -280,6 +280,7 @@ def test_fixture_device_consent_outcomes_and_reports(isolated_database, monkeypa
     for name, role in (
         ("examiner", "forensic_examiner"),
         ("other", "forensic_examiner"),
+        ("supervisor", "supervisor"),
     ):
         monkeypatch.setattr("sys.argv", ["provision", name, role])
         monkeypatch.setattr(provision, "getpass", lambda _: "synthetic-fixture-test")
@@ -297,6 +298,7 @@ def test_fixture_device_consent_outcomes_and_reports(isolated_database, monkeypa
 
         examiner = login("examiner")
         other = login("other")
+        supervisor = login("supervisor")
         paths = {}
         for fixture_id in [
             "SYN-011",
@@ -326,12 +328,22 @@ def test_fixture_device_consent_outcomes_and_reports(isolated_database, monkeypa
             assert "fiktif" in description.json()["disclosure"]
             assert client.get(path, headers=other).status_code == 404
             status = "declined" if fixture_id == "SYN-013" else "granted"
+            keyed = {**examiner, "Idempotency-Key": "fixture-consent"}
+            recovery_path = f"{path}/decision"
+            assert client.get(recovery_path, headers=keyed).json() is None
             consent = client.post(
                 path,
                 json={"status": status},
-                headers={**examiner, "Idempotency-Key": "fixture-consent"},
+                headers=keyed,
             )
             assert consent.status_code == 201, consent.text
+            recovered = client.get(recovery_path, headers=keyed)
+            assert recovered.json() == consent.json()
+            assert recovered.headers["Cache-Control"] == "no-store"
+            assert (
+                client.post(path, json={"status": status}, headers=keyed).json()
+                == consent.json()
+            )
             session = f"{path}/{consent.json()['id']}"
             queue = client.post(f"{session}/jobs", headers=examiner)
             assert client.post(f"{session}/jobs", headers=other).status_code == 404
@@ -347,6 +359,7 @@ def test_fixture_device_consent_outcomes_and_reports(isolated_database, monkeypa
                 revoked = client.post(f"{session}/revoke", headers=examiner)
                 assert revoked.status_code == 200, revoked.text
                 assert revoked.json()["status"] == "revoked"
+                assert client.get(recovery_path, headers=keyed).json() == revoked.json()
                 assert (
                     client.post(f"{session}/revoke", headers=examiner).json()
                     == revoked.json()
@@ -386,12 +399,144 @@ def test_fixture_device_consent_outcomes_and_reports(isolated_database, monkeypa
                 assert item["evidence"]["result"] == expected
                 assert item["evidence_sha256"] == evidence_job["evidence_sha256"]
 
+        path = paths["SYN-015"]
+        [item] = client.get(f"{path}/devices", headers=examiner).json()["sessions"]
+        job_path = f"{path}/jobs/{item['job_id']}?action=retry"
+        assert client.patch(job_path, headers=supervisor).status_code == 403
+        assert client.patch(job_path, headers=other).status_code == 404
+        retry = client.patch(job_path, headers=examiner)
+        assert retry.status_code == 200, retry.text
+        assert retry.json()["status"] == "queued"
+        assert retry.json()["id"] == item["job_id"]
+        assert retry.json()["consent_active"] is True
+        assert client.patch(job_path, headers=examiner).status_code == 409
+        asyncio.run(run_worker(once=True))
+        [job] = client.get(f"{path}/jobs", headers=examiner).json()
+        assert job["failure_code"] == "fixture_disconnected"
+        assert (
+            client.post(
+                f"{path}/devices/{item['id']}/revoke", headers=examiner
+            ).status_code
+            == 200
+        )
+        denied = client.patch(job_path, headers=examiner)
+        assert denied.status_code == 409
+        assert denied.json()["code"] == "consent_required"
+        assert (
+            client.get(f"{path}/jobs", headers=examiner).json()[0]["consent_active"]
+            is False
+        )
+
+        path = paths["SYN-011"]
+        assert (
+            client.put(f"{path}/collaborators/other", headers=supervisor).status_code
+            == 204
+        )
+        wrong_actor = client.get(
+            f"{path}/devices/decision",
+            headers={**other, "Idempotency-Key": "fixture-consent"},
+        )
+        assert wrong_actor.status_code == 200 and wrong_actor.json() is None
+
     with engine.connect() as db:
         assert (
             db.scalar(
                 text("SELECT count(*) FROM consent_decisions WHERE status = 'revoked'")
             )
-            == 1
+            == 2
+        )
+        assert (
+            db.scalar(
+                text(
+                    "SELECT count(*) FROM audit_events WHERE action = 'device.consent.granted'"
+                )
+            )
+            == 6
         )
     with pytest.raises(IntegrityError), engine.begin() as db:
         db.execute(text("DELETE FROM synthetic_device_evidence"))
+
+
+def test_activity_pages_include_the_101st_job_and_pending_finding(
+    isolated_database, monkeypatch
+):
+    config, _, _ = isolated_database
+    command.upgrade(config, "head")
+    password = "fixture-operator-test"
+    for name in ("owner", "other"):
+        monkeypatch.setattr("sys.argv", ["provision", name, "osint_analyst"])
+        monkeypatch.setattr(provision, "getpass", lambda _: password)
+        provision.main()
+
+    with TestClient(app) as client:
+
+        def login(name):
+            result = client.post(
+                "/api/v1/sessions", json={"username": name, "password": password}
+            )
+            return {"Authorization": f"Bearer {result.json()['token']}"}
+
+        owner, other = login("owner"), login("other")
+        created = client.post(
+            "/api/v1/cases",
+            headers=owner,
+            json={"fixture_id": "SYN-001", "purpose": "Review", "scope": "Fixture"},
+        )
+        path = f"/api/v1/cases/{created.json()['id']}"
+        batch = client.post(
+            f"{path}/imports",
+            headers={**owner, "Idempotency-Key": "batch"},
+            json={"content": "Nama\nFixture\n"},
+        )
+        for index in range(101):
+            job = client.post(
+                f"{path}/imports/{batch.json()['id']}/jobs",
+                headers={**owner, "Idempotency-Key": f"job-{index}"},
+            )
+            assert job.status_code == 201, job.text
+        asyncio.run(run_worker(once=True))
+
+        for resource, parameter, filters in (
+            ("jobs", "before", {}),
+            ("findings", "after", {"verification": "pending"}),
+        ):
+            url = f"{path}/{resource}"
+            first = client.get(url, headers=owner, params=filters)
+            assert first.headers["X-Total-Count"] == "101"
+            assert len(first.json()) == 100
+            cursor = first.headers["X-Next-Cursor"]
+            assert cursor == first.json()[-1]["id"]
+            following = client.get(
+                url, headers=owner, params={**filters, parameter: cursor}
+            )
+            assert following.headers["X-Total-Count"] == "101"
+            assert "X-Next-Cursor" not in following.headers
+            [last] = following.json()
+            assert last["id"] not in {item["id"] for item in first.json()}
+            assert (
+                client.get(url, headers=owner, params={parameter: uuid4()}).status_code
+                == 404
+            )
+            assert (
+                client.get(url, headers=other, params={parameter: cursor}).status_code
+                == 404
+            )
+
+        portal = client.get("/api/v1/jobs", headers=owner)
+        assert len(portal.json()) == 100 and portal.headers["X-Total-Count"] == "101"
+        assert portal.headers["X-Pending-Review-Count"] == "101"
+        assert portal.headers["X-Failed-Count"] == "0"
+        inaccessible = client.get("/api/v1/jobs", headers=other)
+        assert (
+            inaccessible.json() == [] and inaccessible.headers["X-Total-Count"] == "0"
+        )
+        reviewed = client.patch(
+            f"{path}/findings/{last['id']}/review",
+            headers=owner,
+            json={"expected": "pending", "verification": "verified", "note": "Fixture"},
+        )
+        assert reviewed.json()["verification"] == "verified"
+        pending = client.get(f"{path}/findings?verification=pending", headers=owner)
+        assert pending.headers["X-Total-Count"] == "100"
+        assert "X-Next-Cursor" not in pending.headers
+        assert all(item["id"] != last["id"] for item in pending.json())

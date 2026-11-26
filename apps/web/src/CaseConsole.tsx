@@ -241,6 +241,16 @@ export function CaseConsole({ fixtures }: { fixtures: SyntheticCase[] }) {
     });
   }
 
+  function openPortalCase(caseId: string, active: Session) {
+    void perform(async () => {
+      const value = await request(`/cases/${caseId}`, {}, active);
+      if (currentSession.current !== active) return;
+      if (!isCase(value) || value.id !== caseId) throw new Error('Unexpected portal case');
+      setCreationNotice('');
+      updateCase(value);
+    }, 'Kasus pekerjaan tidak dapat dibuka.');
+  }
+
   return (
     <section className="message system-status case-console" aria-labelledby="case-console-label">
       <h2 id="case-console-label">Kasus simulasi tersimpan</h2>
@@ -261,6 +271,7 @@ export function CaseConsole({ fixtures }: { fixtures: SyntheticCase[] }) {
             await request('/sessions/current', { method: 'DELETE' }, session);
             clearSession();
           })}>Keluar</button>
+          <PortalJobs session={session} onSessionExpired={expireSession} onOpenCase={(caseId) => openPortalCase(caseId, session)} />
           {session.roles.some((role) => caseRoles.includes(role)) && fixtures.length > 0 && (
             <form onSubmit={(event) => createCase(event, session)}>
               <p className="operation-status" id="case-creation-status" role="status">

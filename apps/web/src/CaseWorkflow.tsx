@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, type FormEvent } from 'react';
 import { isUuid } from './api';
 import { isTimestamp } from './contracts';
 import { formatTimestamp, selectionUrl } from './display';
-import { isObject, request, RequestError, type Session } from './operatorApi';
+import { isObject, operatorResponse, request, RequestError, type Session } from './operatorApi';
 
 type OperatorProps = {
   session: Session;
@@ -21,6 +21,7 @@ type ReviewStatus = keyof typeof reviewStatuses;
 type Job = {
   id: string; case_id: string; kind: 'synthetic_source' | 'synthetic_device'; status: JobStatus; attempts: number;
   created_at: string; failure_code: string | null; scheduled_at: string | null; review_pending: boolean;
+  consent_active: boolean;
 };
 type Finding = {
   id: string; severity: string; threat_status: string; verification: ReviewStatus;
@@ -28,16 +29,41 @@ type Finding = {
   evidence: { source_ref: string; observed_at: string; indicator: string; limitation: string; import_id: string; import_sha256: string };
 };
 
+type ActivityPage<T> = { items: T[]; total: number; next: string | null };
+type ReviewFilter = 'all' | ReviewStatus;
+
 function decodeList<T>(value: unknown, valid: (item: unknown) => item is T): T[] {
   if (!Array.isArray(value) || !value.every(valid)) throw new Error('Unexpected list');
   return value;
+}
+
+function readCount(response: Response, name: string) {
+  const value = response.headers.get(name);
+  const count = Number(value);
+  if (value === null || !/^\d+$/.test(value) || !Number.isSafeInteger(count)) throw new Error('Unexpected count');
+  return count;
+}
+
+async function loadActivity<T>(path: string, session: Session, signal: AbortSignal, valid: (value: unknown) => value is T): Promise<ActivityPage<T>> {
+  const response = await operatorResponse(path, { signal }, session);
+  const items = decodeList(await response.json(), valid);
+  const total = readCount(response, 'X-Total-Count');
+  const next = response.headers.get('X-Next-Cursor');
+  if (total < items.length || (next !== null && !isUuid(next))) throw new Error('Unexpected activity page');
+  return { items, total, next };
+}
+
+function appendActivity<T extends { id: string }>(previous: ActivityPage<T>, next: ActivityPage<T>) {
+  const known = new Set(previous.items.map((item) => item.id));
+  return { ...next, items: [...previous.items, ...next.items.filter((item) => !known.has(item.id))] };
 }
 
 function isJob(value: unknown): value is Job {
   return isObject(value) && isUuid(value.id) && isUuid(value.case_id)
     && (value.kind === 'synthetic_source' || value.kind === 'synthetic_device')
     && typeof value.status === 'string' && Object.hasOwn(jobStatuses, value.status)
-    && typeof value.attempts === 'number' && typeof value.review_pending === 'boolean' && isTimestamp(value.created_at)
+    && typeof value.attempts === 'number' && typeof value.review_pending === 'boolean'
+    && typeof value.consent_active === 'boolean' && isTimestamp(value.created_at)
     && (value.failure_code === null || typeof value.failure_code === 'string')
     && (value.scheduled_at === null || isTimestamp(value.scheduled_at));
 }
@@ -95,28 +121,38 @@ function JobLine({ job }: { job: Job }) {
   </>;
 }
 
-export function PortalJobs(props: OperatorProps) {
-  const { session } = props;
+export function PortalJobs(props: OperatorProps & { onOpenCase: (caseId: string) => void }) {
+  const { session, onOpenCase } = props;
   const { run, busy, issue } = useOperatorTask(props);
-  const [jobs, setJobs] = useState<Job[]>();
+  const [jobs, setJobs] = useState<{ items: Job[]; total: number; failed: number; pending: number | null }>();
+  const canReview = session.roles.some((role) => ['osint_analyst', 'supervisor'].includes(role));
   if (!session.roles.some((role) => ['supervisor', 'osint_analyst', 'forensic_examiner'].includes(role))) return null;
   return (
     <section aria-label="Pekerjaan portal">
       <h3>Pekerjaan portal</h3>
       <button type="button" disabled={busy} onClick={() => void run(async (signal) => {
-        const data = await request('/jobs', { signal }, session);
+        const response = await operatorResponse('/jobs', { signal }, session);
+        const items = decodeList(await response.json(), isJob);
+        const total = readCount(response, 'X-Total-Count');
+        const failed = readCount(response, 'X-Failed-Count');
+        const pending = canReview ? readCount(response, 'X-Pending-Review-Count') : null;
         signal.throwIfAborted();
-        setJobs(decodeList(data, isJob));
+        setJobs({ items, total, failed, pending });
       }, 'Pekerjaan portal gagal dimuat.')}>Muat pekerjaan portal</button>
       {issue && <p role="alert">{issue.message} {issue.id && <code>{issue.id}</code>}</p>}
       {jobs && <>
-        <p role="status">{jobs.filter((job) => job.status === 'failed').length} pekerjaan gagal
-          {session.roles.some((role) => ['osint_analyst', 'supervisor'].includes(role)) &&
-            <> · {jobs.filter((job) => job.review_pending).length} temuan menunggu review</>}
+        <p role="status">{jobs.failed} pekerjaan gagal
+          {jobs.pending !== null && <> · {jobs.pending} temuan menunggu review</>}
+          {jobs.items.length < jobs.total && <> · Menampilkan {jobs.items.length} dari {jobs.total} pekerjaan</>}
           {' · '}Sinkronisasi desktop belum tersedia
         </p>
-        <ul>{jobs.map((job) => <li key={job.id}>
-          <a href={selectionUrl('saved', job.case_id).href}>Buka kasus</a>{' · '}<JobLine job={job} />
+        {jobs.total === 0 && <p>Belum ada pekerjaan yang dapat Anda akses.</p>}
+        <ul>{jobs.items.map((job) => <li key={job.id}>
+          <a href={selectionUrl('saved', job.case_id).href} onClick={(event) => {
+            if (event.button || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+            event.preventDefault();
+            onOpenCase(job.case_id);
+          }}>Buka kasus</a>{' · '}<JobLine job={job} />
         </li>)}</ul>
       </>}
     </section>
@@ -126,23 +162,48 @@ export function PortalJobs(props: OperatorProps) {
 export function CaseWorkflow({ caseId, open, deviceCase, ...props }: OperatorProps & { caseId: string; open: boolean; deviceCase: boolean }) {
   const { session } = props;
   const { run, busy, issue } = useOperatorTask(props);
-  const [data, setData] = useState<{ jobs: Job[]; findings: Finding[]; collaborators: string[] }>();
+  const [data, setData] = useState<{ jobs: ActivityPage<Job>; findings: ActivityPage<Finding>; collaborators: string[] }>();
+  const [reviewFilter, setReviewFilter] = useState<ReviewFilter>('pending');
   const [report, setReport] = useState<{ label: string; data: unknown }>();
   const path = `/cases/${caseId}`;
   const supervisor = session.roles.includes('supervisor');
   const analyst = session.roles.includes('osint_analyst');
   const canReview = open && (supervisor || analyst);
   const canReadTechnical = supervisor || analyst || (deviceCase && session.roles.includes('forensic_examiner'));
+  const examiner = session.roles.includes('forensic_examiner');
+  const pageSize = 25;
+
+  function loadFindings(filter: ReviewFilter, signal: AbortSignal, after?: string) {
+    const query = new URLSearchParams({ limit: String(pageSize) });
+    if (filter !== 'all') query.set('verification', filter);
+    if (after) query.set('after', after);
+    return loadActivity(`${path}/findings?${query}`, session, signal, isFinding);
+  }
+
+  function loadJobs(signal: AbortSignal, before?: string) {
+    const query = new URLSearchParams({ limit: String(pageSize) });
+    if (before) query.set('before', before);
+    return loadActivity(`${path}/jobs?${query}`, session, signal, isJob);
+  }
 
   async function refresh(signal: AbortSignal) {
     const [jobs, findings, collaborators] = await Promise.all(
-      ['jobs', 'findings', 'collaborators'].map((resource) => request(`${path}/${resource}`, { signal }, session)),
+      [loadJobs(signal), loadFindings(reviewFilter, signal), request(`${path}/collaborators`, { signal }, session)],
     );
     signal.throwIfAborted();
     setData({
-      jobs: decodeList(jobs, isJob), findings: decodeList(findings, isFinding),
+      jobs, findings,
       collaborators: decodeList(collaborators, (item): item is string => typeof item === 'string'),
     });
+  }
+
+  function filterFindings(filter: ReviewFilter) {
+    void run(async (signal) => {
+      const findings = await loadFindings(filter, signal);
+      signal.throwIfAborted();
+      setReviewFilter(filter);
+      setData((previous) => previous && { ...previous, findings });
+    }, 'Temuan gagal dimuat.');
   }
 
   function showReport(template: 'executive' | 'technical', label: string) {
@@ -189,22 +250,38 @@ export function CaseWorkflow({ caseId, open, deviceCase, ...props }: OperatorPro
         {issue && <p role="alert">{issue.message} {issue.id && <code>{issue.id}</code>}</p>}
         {data && <>
           <h4>Antrean dan riwayat pekerjaan</h4>
-          {data.jobs.length === 0 && <p>Belum ada pekerjaan untuk kasus ini.</p>}
-          <ul>{data.jobs.map((job) => {
-            const actions = job.status === 'queued' ? [['pause', 'Jeda'], ['cancel', 'Batalkan']]
+          <p role="status">{data.jobs.items.length} dari {data.jobs.total} pekerjaan</p>
+          {data.jobs.total === 0 && <p>Belum ada pekerjaan untuk kasus ini.</p>}
+          <ul>{data.jobs.items.map((job) => {
+            const sourceActions = job.status === 'queued' ? [['pause', 'Jeda'], ['cancel', 'Batalkan']]
               : job.status === 'paused' ? [...(open ? [['resume', 'Lanjutkan']] : []), ['cancel', 'Batalkan']]
               : job.status === 'failed' && open ? [['retry', 'Ulangi']] : [];
+            const actions = job.kind === 'synthetic_source'
+              ? (supervisor || analyst ? sourceActions : [])
+              : examiner && open && job.status === 'failed' && job.consent_active ? [['retry', 'Ulangi mock scan']] : [];
             return <li key={job.id}><JobLine job={job} />{' '}
-              {job.kind === 'synthetic_source' && (supervisor || analyst) && actions.map(([action, label]) =>
+              {actions.map(([action, label]) =>
                 <button key={action} type="button" onClick={() => void run(async (signal) => {
                   await request(`${path}/jobs/${job.id}?action=${action}`, { method: 'PATCH', signal }, session);
                   await refresh(signal);
                 }, 'Pekerjaan gagal diubah.')}>{label}</button>)}
             </li>;
           })}</ul>
+          {data.jobs.next && <button type="button" onClick={() => void run(async (signal) => {
+            const jobs = await loadJobs(signal, data.jobs.next ?? undefined);
+            signal.throwIfAborted();
+            setData((previous) => previous && { ...previous, jobs: appendActivity(previous.jobs, jobs) });
+          }, 'Pekerjaan berikutnya gagal dimuat.')}>Muat pekerjaan berikutnya</button>}
           <h4>Review temuan sintetis</h4>
-          {data.findings.length === 0 && <p>Belum ada temuan.</p>}
-          <ul>{data.findings.map((finding) => {
+          <label>Status review
+            <select value={reviewFilter} onChange={(event) => filterFindings(event.target.value as ReviewFilter)}>
+              {Object.entries(reviewStatuses).map(([status, label]) => <option key={status} value={status}>{label}</option>)}
+              <option value="all">Semua temuan</option>
+            </select>
+          </label>
+          <p role="status">{data.findings.items.length} dari {data.findings.total} temuan</p>
+          {data.findings.total === 0 && <p>Belum ada temuan untuk filter ini.</p>}
+          <ul>{data.findings.items.map((finding) => {
             const evidence = finding.evidence;
             return <li key={finding.id}>
               <p><strong>{reviewStatuses[finding.verification]}</strong> · Indikator <code>{evidence.indicator}</code>
@@ -226,6 +303,11 @@ export function CaseWorkflow({ caseId, open, deviceCase, ...props }: OperatorPro
               </form>}
             </li>;
           })}</ul>
+          {data.findings.next && <button type="button" onClick={() => void run(async (signal) => {
+            const findings = await loadFindings(reviewFilter, signal, data.findings.next ?? undefined);
+            signal.throwIfAborted();
+            setData((previous) => previous && { ...previous, findings: appendActivity(previous.findings, findings) });
+          }, 'Temuan berikutnya gagal dimuat.')}>Muat temuan berikutnya</button>}
           <h4>Kolaborator kasus</h4>
           <ul>{data.collaborators.map((username) => <li key={username}>{username}{' '}
             {supervisor && open && <button type="button" onClick={() => changeCollaborator(username, 'DELETE')}>Cabut akses</button>}
