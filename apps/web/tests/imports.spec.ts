@@ -146,7 +146,7 @@ test('reviews a source job and opens both reports from the same saved case', asy
   await page.route(`**/cases/${a}/imports/${batch}/details`, (route) => route.fulfill({
     json: {
       rows: [{ row_number: 2, reference_label: 'Label fixture', status: 'valid', duplicate: false }],
-      events: [{ action: 'import.confirmed', occurred_at: timestamp, correlation_id: finding }],
+      events: [{ id: finding, action: 'import.confirmed', occurred_at: timestamp, correlation_id: finding, actor_id: owner }],
     },
   }));
   function jobData() {
@@ -161,6 +161,7 @@ test('reviews a source job and opens both reports from the same saved case', asy
       id: finding, severity: 'low', threat_status: 'suspected',
       verification: verified ? 'verified' : 'pending',
       evidence_sha256: 'b'.repeat(64), review_note: verified ? 'Bukti dan batasan diperiksa' : null,
+      reviewed_by: verified ? owner : null, reviewed_at: verified ? timestamp : null,
       evidence: {
         source_ref: 'SRC-FIXTURE', indicator: 'margono.test', observed_at: timestamp,
         limitation: 'Simulasi', import_id: batch, import_sha256: 'a'.repeat(64),
@@ -201,6 +202,7 @@ test('reviews a source job and opens both reports from the same saved case', asy
   await page.getByRole('button', { name: 'Periksa batch' }).click();
   await expect(page.getByText('Label fixture', { exact: false })).toBeVisible();
   await expect(page.getByText('import.confirmed', { exact: false })).toBeVisible();
+  await expect(page.getByText(`Aktor ${owner}`, { exact: false })).toBeVisible();
   await page.getByRole('button', { name: 'Antrekan sumber sintetis' }).click();
   await page.getByRole('button', { name: 'Muat aktivitas kasus' }).click();
   await expect(page.getByText('margono.test', { exact: true })).toBeVisible();
@@ -209,6 +211,7 @@ test('reviews a source job and opens both reports from the same saved case', asy
   await expect(page.getByText('0 dari 0 temuan')).toBeVisible();
   await page.getByLabel('Status review').selectOption('verified');
   await expect(page.getByText('Bukti dan batasan diperiksa')).toBeVisible();
+  await expect(page.getByText(`Peninjau ${owner}`, { exact: false })).toBeVisible();
   for (const name of ['Laporan eksekutif', 'Laporan teknis']) {
     await page.getByRole('button', { name }).click();
     await expect(page.getByRole('region', { name })).toContainText(a);

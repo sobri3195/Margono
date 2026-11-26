@@ -121,12 +121,13 @@ test('leaves the portal jobs panel hidden for administrators without a case role
 
 test('pages both activity lists and submits a finding on the next pending page', async ({ page }) => {
   const first = { id: jobId, verification: 'pending', severity: 'low', threat_status: 'suspected', evidence_sha256: 'a'.repeat(64),
-    review_note: null, evidence: {
+    review_note: null, reviewed_by: null, reviewed_at: null, evidence: {
       source_ref: 'SRC-FIXTURE', observed_at: timestamp, indicator: 'fixture-1.test', limitation: 'Sintetis',
       import_id: sessionId, import_sha256: 'b'.repeat(64),
     },
   };
   const second = { ...first, id: otherJob, evidence: { ...first.evidence, indicator: 'fixture-2.test' } };
+  const verified = { ...second, verification: 'verified', reviewed_by: owner, reviewed_at: timestamp };
   let reviewed = false;
   await page.route(`**/cases/${webCase}/jobs?*`, (route) => {
     const before = new URL(route.request().url()).searchParams.get('before');
@@ -139,7 +140,7 @@ test('pages both activity lists and submits a finding on the next pending page',
   await page.route(`**/cases/${webCase}/findings?*`, (route) => {
     const query = new URL(route.request().url()).searchParams;
     if (query.get('verification') === 'verified') {
-      return route.fulfill({ headers: { 'X-Total-Count': '1' }, json: [{ ...second, verification: 'verified' }] });
+      return route.fulfill({ headers: { 'X-Total-Count': '1' }, json: [verified] });
     }
     expect(query.get('verification')).toBe('pending');
     if (query.get('after') === jobId) {
@@ -152,7 +153,7 @@ test('pages both activity lists and submits a finding on the next pending page',
   await page.route(`**/findings/${otherJob}/review`, (route) => {
     expect(route.request().postDataJSON()).toEqual({ verification: 'verified', note: 'Fixture terverifikasi', expected: 'pending' });
     reviewed = true;
-    return route.fulfill({ json: { ...second, verification: 'verified' } });
+    return route.fulfill({ json: verified });
   });
   await login(page, 'osint_analyst', webCase);
   await page.getByRole('button', { name: 'Muat aktivitas kasus' }).click();
@@ -195,4 +196,42 @@ test('offers a failed mock scan retry only while consent is active', async ({ pa
   await retry.click();
   await expect(retry).toHaveCount(0);
   expect(retried).toBe(true);
+});
+
+test('keeps web-case jobs available to a forensic collaborator without requesting technical findings', async ({ page }) => {
+  let findingsRequested = false;
+  await page.route(`**/cases/${webCase}/findings?*`, (route) => {
+    findingsRequested = true;
+    return route.fulfill({ status: 403, json: {} });
+  });
+  await page.route(`**/cases/${webCase}/jobs?*`, (route) => route.fulfill({
+    headers: { 'X-Total-Count': '1' }, json: [job],
+  }));
+  await login(page, 'forensic_examiner', webCase);
+  await page.getByRole('button', { name: 'Muat aktivitas kasus' }).click();
+  await expect(page.getByText('1 dari 1 pekerjaan')).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Review temuan sintetis' })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Laporan teknis' })).toHaveCount(0);
+  expect(findingsRequested).toBe(false);
+});
+
+test('lets a supervisor inspect the actor and correlation ID for a revoked consent', async ({ page }) => {
+  await page.route(`**/cases/${usbCase}/devices`, (route) => route.fulfill({ json: {
+    mode: 'SYNTHETIC', platform: 'android', scope: 'Fixture', disclosure: 'Simulasi',
+    sessions: [{
+      id: sessionId, status: 'revoked', decided_at: timestamp, revoked_at: timestamp,
+      job_id: null, evidence: null, evidence_sha256: null,
+    }],
+  } }));
+  await page.route(`**/cases/${usbCase}/devices/${sessionId}/audit`, (route) => route.fulfill({ json: [{
+    id: jobId, action: 'device.consent.revoked', actor_id: owner,
+    occurred_at: timestamp, correlation_id: otherJob,
+  }] }));
+  await login(page, 'supervisor', usbCase);
+  await page.getByRole('button', { name: 'Muat sesi perangkat' }).click();
+  await page.getByRole('button', { name: 'Periksa audit sesi' }).click();
+  const audit = page.getByRole('region', { name: 'Audit sesi perangkat' });
+  await expect(audit).toContainText(sessionId);
+  await expect(audit).toContainText(`Aktor ${owner}`);
+  await expect(audit).toContainText(`ID korelasi ${otherJob}`);
 });

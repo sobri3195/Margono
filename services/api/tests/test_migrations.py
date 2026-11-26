@@ -317,7 +317,7 @@ def test_upgrade_requires_review_of_invalid_legacy_records(isolated_database):
     with engine.connect() as db:
         assert (
             db.scalar(sa.text("SELECT version_num FROM alembic_version"))
-            == "0006_synthetic_workflow"
+            == "0007_audit_context"
         )
 
 
@@ -363,6 +363,7 @@ def test_audit_upgrade_preserves_old_events_and_rejects_mismatched_imports(
             sa.text("SELECT * FROM audit_events WHERE id = :id"), {"id": event_id}
         ).one()
         assert legacy.action == "import.confirmed" and legacy.import_id is None
+        assert legacy.device_session_id is None and legacy.subject_user_id is None
         with (
             pytest.raises(IntegrityError, match="fk_audit_import_case"),
             db.begin_nested(),

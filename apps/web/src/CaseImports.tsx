@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ChangeEvent, type FormEvent } from 'react';
 import { isUuid } from './api';
+import { AuditEvents, isAuditEvent, type AuditEvent } from './AuditEvents';
 import { isTimestamp } from './contracts';
 import { formatTimestamp } from './display';
 import { isObject, operatorResponse, request, RequestError, type Session } from './operatorApi';
@@ -25,18 +26,13 @@ type Inspection = {
 type BatchDetails = {
   id: string;
   rows: Array<{ row_number: number; reference_label: string | null; status: string; duplicate: boolean }>;
-  events: Array<{ action: string; occurred_at: string; correlation_id: string | null }>;
+  events: AuditEvent[];
 };
 
 function isBatchRow(value: unknown): value is BatchDetails['rows'][number] {
   return isObject(value) && typeof value.row_number === 'number'
     && (value.reference_label === null || typeof value.reference_label === 'string')
     && typeof value.status === 'string' && typeof value.duplicate === 'boolean';
-}
-
-function isBatchEvent(value: unknown): value is BatchDetails['events'][number] {
-  return isObject(value) && typeof value.action === 'string' && isTimestamp(value.occurred_at)
-    && (value.correlation_id === null || isUuid(value.correlation_id));
 }
 
 type Issue = { message: string; correlationId?: string | null };
@@ -316,7 +312,7 @@ export function CaseImports({ caseId, session, canManageImports, caseOpen, onSes
       const data = await request(`${path}/${id}/details`, { signal }, session);
       signal.throwIfAborted();
       if (!isObject(data) || !Array.isArray(data.rows) || !data.rows.every(isBatchRow)
-          || !Array.isArray(data.events) || !data.events.every(isBatchEvent)) throw new Error('Unexpected import details');
+          || !Array.isArray(data.events) || !data.events.every(isAuditEvent)) throw new Error('Unexpected import details');
       setDetails({ id, rows: data.rows, events: data.events });
     }, 'Rincian batch gagal dimuat.');
   }
@@ -449,10 +445,7 @@ export function CaseImports({ caseId, session, canManageImports, caseOpen, onSes
             {row.row_number} · {row.reference_label ?? 'Label kosong atau tidak valid'} · {row.status}{row.duplicate && ' · Duplikat'}
           </li>)}</ul>
           <h4>Audit batch terbaru</h4>
-          <ul>{details.events.map((event, index) => <li key={index}>
-            {event.action} · <time dateTime={event.occurred_at}>{formatTimestamp(event.occurred_at)}</time>
-            {event.correlation_id && <> · <code>{event.correlation_id}</code></>}
-          </li>)}</ul>
+          <AuditEvents events={details.events} />
         </section>}
         {history?.next_cursor && <button type="button" onClick={more}>Muat impor sebelumnya</button>}
       </fieldset>

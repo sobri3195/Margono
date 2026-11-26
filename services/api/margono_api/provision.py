@@ -4,6 +4,7 @@ import argparse
 from getpass import getpass
 from os import environ
 from re import fullmatch
+from uuid import uuid4
 
 from sqlalchemy import text
 
@@ -39,6 +40,14 @@ def main() -> None:
         db.execute(
             text("INSERT INTO user_roles (user_id, role_slug) VALUES (:user, :role)"),
             [{"user": user_id, "role": role} for role in set(args.role)],
+        )
+        # The trusted local CLI has no authenticated application actor.
+        db.execute(
+            text("""
+                INSERT INTO audit_events (action, subject_user_id, correlation_id)
+                VALUES ('account.provisioned', :user, :correlation)
+            """),
+            {"user": user_id, "correlation": uuid4()},
         )
     print("Local operator created.")
 

@@ -4,14 +4,18 @@ import argparse
 import asyncio
 import json
 from hashlib import sha256
+from logging import getLogger
 from os import environ
+from time import monotonic
 from uuid import UUID
 
 from procrastinate import App, JobContext, PsycopgConnector, RetryStrategy
+from procrastinate.exceptions import ConnectorException
+from psycopg import OperationalError
 from sqlalchemy import text
 from sqlalchemy.engine import Connection, make_url
 
-from .database import open_database
+from .database import DatabaseUnavailable, open_database
 from .fixtures import CATALOG
 
 QUEUE = "margono-synthetic"
@@ -19,7 +23,9 @@ SOURCE_TASK = "margono.synthetic_source"
 DEVICE_TASK = "margono.synthetic_device"
 WORKER_TIMEOUT_SECONDS = 30
 MAX_RECOVERIES = 3
+MAX_RECONNECT_DELAY = 15
 FIXTURES = {fixture.case_id: fixture for fixture in CATALOG.cases}
+logger = getLogger(__name__)
 
 
 class FixtureTimeout(Exception):
@@ -76,20 +82,33 @@ def get_app() -> App:
     if url.drivername != "postgresql+psycopg":
         raise ValueError("Expected a PostgreSQL URL using psycopg.")
     conninfo = url.set(drivername="postgresql").render_as_string(hide_password=False)
-    app = App(connector=PsycopgConnector(conninfo=conninfo))
+    app = App(
+        connector=PsycopgConnector(
+            conninfo=conninfo, timeout=5, kwargs={"connect_timeout": 2}
+        )
+    )
 
     @app.task(
         name=SOURCE_TASK,
         queue=QUEUE,
         pass_context=True,
         retry=RetryStrategy(
-            max_attempts=3, exponential_wait=2, retry_exceptions=(FixtureTimeout,)
+            max_attempts=3,
+            exponential_wait=2,
+            retry_exceptions=(FixtureTimeout, DatabaseUnavailable),
         ),
     )
     def generate_evidence(context: JobContext, job_id: str) -> None:
         process_source(UUID(job_id), context)
 
-    @app.task(name=DEVICE_TASK, queue=QUEUE, pass_context=True)
+    @app.task(
+        name=DEVICE_TASK,
+        queue=QUEUE,
+        pass_context=True,
+        retry=RetryStrategy(
+            max_attempts=3, exponential_wait=2, retry_exceptions=(DatabaseUnavailable,)
+        ),
+    )
     def record_device(context: JobContext, job_id: str) -> None:
         process_device(UUID(job_id), context)
 
@@ -269,12 +288,19 @@ def process_device(job_id: UUID, context: JobContext) -> None:
             {"status": status, "failure": failure, "job": job_id},
         )
         db.execute(
-            text("INSERT INTO audit_events (case_id, action) VALUES (:case, :action)"),
-            {"case": case.id, "action": f"job.device.{failure or 'completed'}"},
+            text("""
+                INSERT INTO audit_events (case_id, device_session_id, action)
+                VALUES (:case, :session, :action)
+            """),
+            {
+                "case": case.id,
+                "session": job.session_id,
+                "action": f"job.device.{failure or 'completed'}",
+            },
         )
 
 
-async def run_worker(*, once: bool = False) -> None:
+async def worker_session(*, once: bool) -> None:
     app = get_app()
 
     # A live worker also recovers a peer that exits without closing its claim.
@@ -294,6 +320,40 @@ async def run_worker(*, once: bool = False) -> None:
                     await app.run_worker_async(queues=[QUEUE], listen_notify=False)
                 finally:
                     recovery.cancel()
+
+
+def is_connection_failure(error: BaseException) -> bool:
+    if isinstance(error, ExceptionGroup):
+        return all(is_connection_failure(item) for item in error.exceptions)
+    if isinstance(error, ConnectorException) and error.__cause__ is not None:
+        return is_connection_failure(error.__cause__)
+    if isinstance(error, OperationalError):
+        state = error.sqlstate
+        return (
+            state is None
+            or state.startswith("08")
+            or state in {"57P01", "57P02", "57P03"}
+        )
+    return isinstance(error, DatabaseUnavailable)
+
+
+async def run_worker(*, once: bool = False) -> None:
+    delay = 1
+    while True:
+        started = monotonic()
+        try:
+            await worker_session(once=once)
+            return
+        except Exception as error:
+            if once or not is_connection_failure(error):
+                raise
+            if monotonic() - started >= WORKER_TIMEOUT_SECONDS:
+                delay = 1
+            logger.warning(
+                "PostgreSQL connection lost. Retrying worker in %d seconds.", delay
+            )
+            await asyncio.sleep(delay)
+            delay = min(delay * 2, MAX_RECONNECT_DELAY)
 
 
 def main() -> None:

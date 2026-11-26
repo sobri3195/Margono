@@ -103,6 +103,12 @@ def test_fixture_import_queue_review_report_and_recovery(
         assert (
             client.get(f"{path}/reports/technical", headers=examiner).status_code == 403
         )
+        denied = client.get(f"{path}/findings", headers=examiner)
+        assert denied.status_code == 403
+        assert denied.json()["code"] == "technical_findings_denied"
+        assert (
+            client.get(f"{path}/reports/executive", headers=examiner).status_code == 200
+        )
         assert (
             client.get("/api/v1/jobs", headers=reviewer).json()[0]["case_id"] == case_id
         )
@@ -171,6 +177,7 @@ def test_fixture_import_queue_review_report_and_recovery(
             assert finding["evidence"]["fixture_id"] == fixture_id
             assert finding["evidence"]["import_id"] == import_id
             assert finding["evidence"]["indicator"] == "margono.test"
+            assert finding["reviewed_by"] is None
             assert "Label berulang" not in found.text
             review = f"{path}/findings/{finding['id']}/review"
             verification = {"SYN-009": "inconclusive", "SYN-010": "rejected"}.get(
@@ -186,6 +193,12 @@ def test_fixture_import_queue_review_report_and_recovery(
             assert accepted.status_code == 200, accepted.text
             assert accepted.json()["threat_status"] == finding["threat_status"]
             assert accepted.json()["severity"] == finding["severity"]
+            with engine.connect() as db:
+                reviewer_id = db.scalar(
+                    text("SELECT id FROM users WHERE username = :name"),
+                    {"name": "reviewer" if actor is reviewer else "owner"},
+                )
+            assert accepted.json()["reviewed_by"] == str(reviewer_id)
             assert (
                 client.patch(review, json=decision, headers=actor).json()
                 == accepted.json()
@@ -218,6 +231,15 @@ def test_fixture_import_queue_review_report_and_recovery(
                 "job.source.completed",
                 f"finding.{verification}",
             } <= {event["action"] for event in details["events"]}
+            [review_event] = [
+                event
+                for event in details["events"]
+                if event["action"] == f"finding.{verification}"
+            ]
+            assert review_event["actor_id"] == str(reviewer_id)
+            assert (
+                review_event["correlation_id"] == accepted.headers["X-Correlation-ID"]
+            )
 
         path = cases["SYN-001"][0]
         assert (
@@ -364,7 +386,53 @@ def test_fixture_device_consent_outcomes_and_reports(isolated_database, monkeypa
                     client.post(f"{session}/revoke", headers=examiner).json()
                     == revoked.json()
                 )
+                assert (
+                    client.get(f"{session}/audit", headers=examiner).status_code == 403
+                )
+                audit = client.get(f"{session}/audit", headers=supervisor).json()
+                assert {event["action"] for event in audit} == {
+                    "device.consent.granted",
+                    "job.device.queued",
+                    "device.consent.revoked",
+                }
+                revoked_event = next(
+                    event
+                    for event in audit
+                    if event["action"] == "device.consent.revoked"
+                )
+                assert revoked_event["actor_id"] == created.json()["owner_id"]
+                assert (
+                    revoked_event["correlation_id"]
+                    == revoked.headers["X-Correlation-ID"]
+                )
             paths[fixture_id] = case
+
+        # Claim a device job so the domain row stays queued while its worker claim is active.
+        with engine.begin() as db:
+            worker_id = db.scalar(
+                text("SELECT worker_id FROM procrastinate_register_worker_v1()")
+            )
+            claimed_id = db.scalar(
+                text("""
+                    SELECT args ->> 'job_id'
+                    FROM procrastinate_fetch_job_v2(ARRAY[:queue]::varchar[], :worker)
+                """),
+                {"queue": QUEUE, "worker": worker_id},
+            )
+        case = paths["SYN-011"]
+        [running] = client.get(f"{case}/jobs", headers=examiner).json()
+        assert running["id"] == claimed_id and running["status"] == "running"
+        running_report = client.get(
+            f"{case}/reports/technical", headers=examiner
+        ).json()
+        assert running_report["device_jobs"][0]["status"] == running["status"]
+        assert running_report["device_summary"] == [{"status": "running", "count": 1}]
+        assert client.get(f"{case}/findings", headers=examiner).status_code == 200
+        with engine.begin() as db:
+            db.execute(
+                text("SELECT procrastinate_unregister_worker_v1(:worker)"),
+                {"worker": worker_id},
+            )
 
         asyncio.run(run_worker(once=True))
         for fixture_id, case in paths.items():
@@ -439,6 +507,21 @@ def test_fixture_device_consent_outcomes_and_reports(isolated_database, monkeypa
         assert wrong_actor.status_code == 200 and wrong_actor.json() is None
 
     with engine.connect() as db:
+        accounts = db.execute(
+            text("""
+            SELECT u.username, a.actor_id, a.correlation_id FROM audit_events a
+            JOIN users u ON u.id = a.subject_user_id WHERE a.action = 'account.provisioned'
+        """)
+        ).all()
+        assert {event.username for event in accounts} == {
+            "examiner",
+            "other",
+            "supervisor",
+        }
+        assert len(accounts) == 3
+        assert all(
+            event.actor_id is None and event.correlation_id for event in accounts
+        )
         assert (
             db.scalar(
                 text("SELECT count(*) FROM consent_decisions WHERE status = 'revoked'")
@@ -452,6 +535,20 @@ def test_fixture_device_consent_outcomes_and_reports(isolated_database, monkeypa
                 )
             )
             == 6
+        )
+    with (
+        pytest.raises(IntegrityError, match="fk_audit_device_case"),
+        engine.begin() as db,
+    ):
+        db.execute(
+            text("""
+            UPDATE audit_events SET case_id = :wrong_case
+            WHERE action = 'device.consent.granted' AND case_id = :right_case
+        """),
+            {
+                "wrong_case": paths["SYN-012"].rsplit("/", 1)[-1],
+                "right_case": paths["SYN-011"].rsplit("/", 1)[-1],
+            },
         )
     with pytest.raises(IntegrityError), engine.begin() as db:
         db.execute(text("DELETE FROM synthetic_device_evidence"))

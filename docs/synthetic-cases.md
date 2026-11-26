@@ -28,9 +28,13 @@ Jalankan worker di terminal terpisah dari API. Keduanya memakai `MARGONO_DATABAS
 
 Opsi `--once` mengerjakan job yang sudah bisa dijalankan lalu keluar. Job yang dijadwalkan untuk retry tetap tersimpan di PostgreSQL. Untuk batch dengan baris valid, tekan **Antrekan sumber sintetis** lalu **Muat aktivitas kasus** untuk melihat status. Job sumber yang menunggu dapat dijeda atau dibatalkan. Job yang dijeda dapat dilanjutkan dan job yang gagal dapat diulang. Worker memeriksa kembali bahwa kasus terbuka sebelum membuat bukti. Commit hasil menjadi checkpoint satu langkah dan melekat pada satu Job ID. Sumber fixture hanya menghasilkan indikator `margono.test` dan metadata sintetis.
 
+Worker kontinu membuka kembali koneksi saat PostgreSQL terputus. Jeda percobaan koneksi meningkat dari satu detik hingga maksimal 15 detik. Setelah tersambung, worker memeriksa klaim yang terputus dan melanjutkan antrean. Opsi `--once` mengembalikan kegagalan koneksi ke pemanggil.
+
 OSINT Analyst pemilik, kolaborator OSINT Analyst dan Supervisor dapat meninjau temuan. **Muat aktivitas kasus** membuka antrean **Menunggu review**, jumlah temuan yang cocok, dan daftar job. Gunakan **Muat temuan berikutnya** atau **Muat pekerjaan berikutnya** untuk membuka halaman tambahan. Filter status membuka temuan yang sudah diputuskan. Catat keputusan dan konteks bukti. Keputusan tersimpan tidak dapat ditimpa oleh operator kedua. Laporan eksekutif memuat ringkasan. Laporan teknis memuat detail temuan dan bukti sintetis yang sesuai Case ID. Forensic Examiner dapat membuka laporan teknis pada kasus USB yang dapat diaksesnya.
 
 Panel **Pekerjaan portal** tersedia untuk OSINT Analyst, Forensic Examiner, dan Supervisor. Daftar mengikuti akses kasus. Panel menampilkan hitungan kegagalan dan memberi tahu pengguna jika daftar hanya memuat sebagian dari total pekerjaan. OSINT Analyst dan Supervisor juga melihat jumlah temuan menunggu review. **Buka kasus** membuka kasus dari aktivitas tanpa meminta login ulang selama sesi masih aktif.
+
+Temuan teknis dan laporan teknis sama-sama mengikuti hak baca berdasarkan peran dan workspace. OSINT Analyst dan Supervisor dapat membaca keduanya pada kasus dalam cakupannya. Forensic Examiner dapat membaca keduanya pada kasus USB dalam cakupannya. Kasus Web Intelligence yang dibagikan kepada Forensic Examiner tetap menyediakan aktivitas job dan laporan eksekutif. Temuan yang sudah diputuskan menampilkan ID peninjau dan waktu review. Rincian audit batch menampilkan aktor dan ID korelasi bila tersedia.
 
 ## Simulasi USB di web
 
@@ -39,6 +43,8 @@ Buka kasus dari fixture USB dengan akun Forensic Examiner yang berhak membacanya
 Jika respons keputusan hilang, **Periksa keputusan** membaca keputusan asli berdasarkan kunci operasi. **Coba lagi keputusan** mengirim keputusan yang sama dengan kunci asli jika hasil belum tersedia. Referensi tersimpan per operator dan Case ID selama sesi tab, termasuk setelah berpindah kasus, reload, dan login ulang di tab tersebut. Setelah hasil diketahui, dialog persetujuan dapat dipakai untuk mencatat keputusan baru secara sengaja.
 
 Pada kasus terbuka dengan persetujuan aktif, Forensic Examiner dapat memilih **Ulangi mock scan** di aktivitas kasus untuk mengantrekan kembali Job ID yang gagal. Pencabutan memblokir retry. Fixture putus koneksi tetap mensimulasikan putus koneksi pada percobaan berikutnya.
+
+Supervisor dapat memilih **Periksa audit sesi** di daftar perangkat untuk melihat keputusan, pencabutan, dan peristiwa job yang dicatat dengan referensi sesi tersebut. Aktivitas kasus dan kedua laporan memakai status antrean yang sama untuk job USB.
 
 ## API
 
@@ -60,6 +66,7 @@ Pada kasus terbuka dengan persetujuan aktif, Forensic Examiner dapat memilih **U
 | Temuan dan dua laporan | `GET /api/v1/cases/{id}/findings`, `PATCH /api/v1/cases/{id}/findings/{finding_id}/review`, dan `GET /api/v1/cases/{id}/reports/{executive\|technical}` |
 | Persetujuan dan scan sintetis | `GET` dan `POST /api/v1/cases/{id}/devices`, serta `POST` pada `/devices/{session_id}/jobs` dan `/devices/{session_id}/revoke` |
 | Pulihkan keputusan consent | `GET /api/v1/cases/{id}/devices/decision` dengan `Idempotency-Key` |
+| Audit sesi perangkat | `GET /api/v1/cases/{id}/devices/{session_id}/audit` untuk Supervisor |
 
 Gunakan `Authorization: Bearer <token>` setelah login. Untuk membuat kasus, web mengirim `Idempotency-Key` baru dan memakai kunci yang sama saat mencoba ulang payload yang sama. Klien API lama tetap bisa membuat kasus tanpa header tersebut. Jika kunci dikirim, percobaan ulang oleh operator yang sama mengembalikan `201` dan respons asli, termasuk setelah kasus ditutup. Perubahan payload dengan kunci yang sama menghasilkan `409 idempotency_conflict`. Tujuan dan ruang lingkup dengan karakter kontrol menghasilkan `422` sebelum transaksi.
 

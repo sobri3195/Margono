@@ -1,5 +1,6 @@
 import { useRef, useState } from 'react';
 import { isUuid } from './api';
+import { AuditEvents, isAuditEvent, type AuditEvent } from './AuditEvents';
 import { useOperatorTask } from './CaseWorkflow';
 import { isTimestamp } from './contracts';
 import { formatTimestamp } from './display';
@@ -46,6 +47,7 @@ export function CaseDevices(props: {
 }) {
   const { caseId, session, open } = props;
   const [devices, setDevices] = useState<Devices>();
+  const [audit, setAudit] = useState<{ sessionId: string; events: AuditEvent[] }>();
   const storageKey = `margono.pending-consent:${session.userId}:${caseId}`;
   const [pendingDecision, setPendingDecision] = useState(() => readConsentAttempt(storageKey));
   const [notice, setNotice] = useState('');
@@ -53,7 +55,8 @@ export function CaseDevices(props: {
   const dialog = useRef<HTMLDialogElement>(null);
   const path = `/cases/${caseId}/devices`;
   const examiner = session.roles.includes('forensic_examiner');
-  const canRevoke = examiner || session.roles.includes('supervisor');
+  const supervisor = session.roles.includes('supervisor');
+  const canRevoke = examiner || supervisor;
 
   async function refresh(signal: AbortSignal) {
     const data = await request(path, { signal }, session);
@@ -115,8 +118,20 @@ export function CaseDevices(props: {
   function updateDevice(id: string, action: 'jobs' | 'revoke') {
     void run(async (signal) => {
       await request(`${path}/${id}/${action}`, { method: 'POST', signal }, session);
+      signal.throwIfAborted();
+      setAudit(undefined);
       await refresh(signal);
     }, 'Sesi perangkat gagal diperbarui.');
+  }
+
+  function readAudit(sessionId: string) {
+    setAudit(undefined);
+    void run(async (signal) => {
+      const events = await request(`${path}/${sessionId}/audit`, { signal }, session);
+      signal.throwIfAborted();
+      if (!Array.isArray(events) || !events.every(isAuditEvent)) throw new Error('Unexpected consent audit');
+      setAudit({ sessionId, events });
+    }, 'Audit sesi perangkat gagal dimuat.');
   }
 
   return (
@@ -165,7 +180,13 @@ export function CaseDevices(props: {
             <button type="button" disabled={busy} onClick={() => updateDevice(item.id, 'jobs')}>Antrekan mock scan</button>}
           {canRevoke && item.status === 'granted' &&
             <button type="button" disabled={busy} onClick={() => updateDevice(item.id, 'revoke')}>Cabut persetujuan</button>}
+          {supervisor &&
+            <button type="button" disabled={busy} onClick={() => readAudit(item.id)}>Periksa audit sesi</button>}
         </li>)}</ul>
+        {audit && <section aria-label="Audit sesi perangkat">
+          <h4>Audit sesi perangkat <code>{audit.sessionId}</code></h4>
+          <AuditEvents events={audit.events} />
+        </section>}
       </>}
     </section>
   );

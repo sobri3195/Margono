@@ -16,6 +16,7 @@ from .operations import (
     CurrentOperator,
     Database,
     IdempotencyKey,
+    Operator,
     OperatorName,
     case_condition,
     require_import_access,
@@ -26,12 +27,15 @@ from .synthetic_worker import DEVICE_TASK, FIXTURES, SOURCE_TASK, defer_job
 
 router = APIRouter()
 
-JOB_COLUMNS = """
-    j.id, j.case_id, j.kind, j.import_id, j.device_session_id, j.created_at, j.failure_code,
+JOB_STATUS = """
     CASE WHEN j.status <> 'queued' THEN j.status
         WHEN q.status = 'doing' THEN 'running'
         WHEN q.status = 'failed' THEN 'failed'
-        ELSE 'queued' END AS status,
+        ELSE 'queued' END
+"""
+JOB_COLUMNS = f"""
+    j.id, j.case_id, j.kind, j.import_id, j.device_session_id, j.created_at, j.failure_code,
+    {JOB_STATUS} AS status,
     COALESCE(q.attempts, 0) AS attempts, q.scheduled_at,
     EXISTS (SELECT 1 FROM synthetic_findings f WHERE f.job_id = j.id AND f.verification = 'pending') AS review_pending,
     EXISTS (
@@ -46,7 +50,7 @@ FINDINGS_SCOPE = (
 FINDINGS = (
     """
     SELECT f.id, j.id AS job_id, j.import_id, f.evidence, f.evidence_sha256,
-           f.threat_status, f.severity, f.verification, f.review_note, f.reviewed_at
+           f.threat_status, f.severity, f.verification, f.review_note, f.reviewed_at, f.reviewed_by
 """
     + FINDINGS_SCOPE
 )
@@ -78,6 +82,12 @@ def require_open(case) -> None:
         raise api_error(409, "case_closed", "Reopen the case before making changes.")
 
 
+def can_read_technical(user: Operator, fixture_id: str) -> bool:
+    return bool({"osint_analyst", "supervisor"} & user.roles) or (
+        "forensic_examiner" in user.roles and FIXTURES[fixture_id].workspace == "usb"
+    )
+
+
 @router.get("/cases/{case_id}/imports/{import_id}/details")
 def import_details(case_id: UUID, import_id: UUID, db: Database, user: CurrentOperator):
     visible_case(db, user, case_id)
@@ -91,7 +101,7 @@ def import_details(case_id: UUID, import_id: UUID, db: Database, user: CurrentOp
     ).mappings()
     events = db.execute(
         text("""
-            SELECT action, occurred_at, correlation_id FROM audit_events
+            SELECT id, action, occurred_at, correlation_id, actor_id FROM audit_events
             WHERE case_id = :case AND import_id = :id
             ORDER BY occurred_at DESC, id DESC LIMIT 100
         """),
@@ -355,7 +365,8 @@ def control_job(
     case = visible_case(db, user, case_id, lock=True)
     job = db.execute(
         text("""
-        SELECT j.kind, j.status, j.import_id, j.queue_id, q.status AS queue_status, c.status AS consent_status
+        SELECT j.kind, j.status, j.import_id, j.device_session_id, j.queue_id,
+            q.status AS queue_status, c.status AS consent_status
         FROM jobs j JOIN procrastinate_jobs q ON q.id = j.queue_id
         LEFT JOIN synthetic_device_sessions s ON s.id = j.device_session_id
         LEFT JOIN consent_records c ON c.id = s.consent_id
@@ -419,7 +430,13 @@ def control_job(
     )
     kind = "device" if device_job else "source"
     write_audit(
-        db, request, user.id, f"job.{kind}.{action}", case_id, import_id=job.import_id
+        db,
+        request,
+        user.id,
+        f"job.{kind}.{action}",
+        case_id,
+        import_id=job.import_id,
+        device_session_id=job.device_session_id,
     )
     return read_job(db, job_id)
 
@@ -440,7 +457,13 @@ def findings(
     after: UUID | None = None,
     limit: PageLimit = 100,
 ):
-    visible_case(db, user, case_id)
+    case = visible_case(db, user, case_id)
+    if not can_read_technical(user, case.synthetic_fixture_id):
+        raise api_error(
+            403,
+            "technical_findings_denied",
+            "This role cannot read technical findings for this workspace.",
+        )
     selector = " AND (CAST(:status AS text) IS NULL OR f.verification = :status)"
     params = {"case": case_id, "status": verification, "limit": limit + 1}
     cutoff = ""
@@ -533,12 +556,8 @@ def report(
     user: CurrentOperator,
 ):
     case = visible_case(db, user, case_id, lock=True)
-    device_examiner = (
-        "forensic_examiner" in user.roles
-        and FIXTURES[case.synthetic_fixture_id].workspace == "usb"
-    )
-    if template == "technical" and not (
-        device_examiner or {"osint_analyst", "supervisor"} & user.roles
+    if template == "technical" and not can_read_technical(
+        user, case.synthetic_fixture_id
     ):
         raise api_error(
             403,
@@ -566,9 +585,9 @@ def report(
         "summary": [dict(row) for row in summary],
     }
     devices = db.execute(
-        text("""
-        SELECT j.id, j.status, j.failure_code, d.evidence, d.evidence_sha256
-        FROM jobs j LEFT JOIN synthetic_device_evidence d ON d.job_id = j.id
+        text(f"""
+        SELECT j.id, {JOB_STATUS} AS status, j.failure_code, d.evidence, d.evidence_sha256
+        {JOB_FROM} LEFT JOIN synthetic_device_evidence d ON d.job_id = j.id
         WHERE j.case_id = :case AND j.kind = 'synthetic_device'
         ORDER BY j.created_at DESC, j.id
     """),

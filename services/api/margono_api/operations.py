@@ -157,16 +157,18 @@ def write_audit(
     case_id: UUID | None = None,
     *,
     import_id: UUID | None = None,
+    device_session_id: UUID | None = None,
 ):
     db.execute(
-        text("""INSERT INTO audit_events (case_id, actor_id, action, correlation_id, import_id)
-                       VALUES (:case, :actor, :action, :correlation, :import_id)"""),
+        text("""INSERT INTO audit_events (case_id, actor_id, action, correlation_id, import_id, device_session_id)
+                       VALUES (:case, :actor, :action, :correlation, :import_id, :device_session_id)"""),
         {
             "case": case_id,
             "actor": operator_id,
             "action": action,
             "correlation": UUID(request.state.correlation_id),
             "import_id": import_id,
+            "device_session_id": device_session_id,
         },
     )
 

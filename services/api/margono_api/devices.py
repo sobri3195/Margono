@@ -121,6 +121,23 @@ def recover_decision(
     return device_view(get_session(db, case_id, prior.id))
 
 
+@router.get("/cases/{case_id}/devices/{session_id}/audit")
+def device_audit(case_id: UUID, session_id: UUID, db: Database, user: CurrentOperator):
+    device_case(db, user, case_id)
+    if "supervisor" not in user.roles:
+        raise api_error(403, "device_audit_denied", "The Supervisor role is required.")
+    get_session(db, case_id, session_id)
+    events = db.execute(
+        text("""
+            SELECT id, action, occurred_at, correlation_id, actor_id
+            FROM audit_events WHERE case_id = :case AND device_session_id = :session
+            ORDER BY occurred_at DESC, id DESC LIMIT 100
+        """),
+        {"case": case_id, "session": session_id},
+    ).mappings()
+    return [dict(event) for event in events]
+
+
 @router.post("/cases/{case_id}/devices", status_code=201)
 def decide_consent(
     case_id: UUID,
@@ -179,7 +196,14 @@ def decide_consent(
     """),
         {"case": case_id, "session": session_id, "consent": consent, "key": key},
     )
-    write_audit(db, request, user.id, f"device.consent.{payload.status}", case_id)
+    write_audit(
+        db,
+        request,
+        user.id,
+        f"device.consent.{payload.status}",
+        case_id,
+        device_session_id=session_id,
+    )
     return device_view(get_session(db, case_id, session_id))
 
 
@@ -215,7 +239,9 @@ def queue_device(
         text("UPDATE jobs SET queue_id = :queue WHERE id = :job"),
         {"queue": queue_id, "job": job_id},
     )
-    write_audit(db, request, user.id, "job.device.queued", case_id)
+    write_audit(
+        db, request, user.id, "job.device.queued", case_id, device_session_id=session_id
+    )
     return read_job(db, job_id)
 
 
@@ -270,5 +296,12 @@ def revoke_consent(
             """),
                 {"job": session.job_id},
             )
-    write_audit(db, request, user.id, "device.consent.revoked", case_id)
+    write_audit(
+        db,
+        request,
+        user.id,
+        "device.consent.revoked",
+        case_id,
+        device_session_id=session_id,
+    )
     return device_view(get_session(db, case_id, session_id))

@@ -26,6 +26,7 @@ type Job = {
 type Finding = {
   id: string; severity: string; threat_status: string; verification: ReviewStatus;
   evidence_sha256: string; review_note: string | null;
+  reviewed_by: string | null; reviewed_at: string | null;
   evidence: { source_ref: string; observed_at: string; indicator: string; limitation: string; import_id: string; import_sha256: string };
 };
 
@@ -72,7 +73,9 @@ function isFinding(value: unknown): value is Finding {
   return isObject(value) && isUuid(value.id) && typeof value.severity === 'string'
     && typeof value.threat_status === 'string' && typeof value.verification === 'string'
     && Object.hasOwn(reviewStatuses, value.verification) && typeof value.evidence_sha256 === 'string'
-    && (value.review_note === null || typeof value.review_note === 'string') && isObject(value.evidence)
+    && (value.review_note === null || typeof value.review_note === 'string')
+    && (value.reviewed_by === null || isUuid(value.reviewed_by))
+    && (value.reviewed_at === null || isTimestamp(value.reviewed_at)) && isObject(value.evidence)
     && typeof value.evidence.source_ref === 'string' && isTimestamp(value.evidence.observed_at)
     && typeof value.evidence.indicator === 'string' && typeof value.evidence.limitation === 'string'
     && isUuid(value.evidence.import_id) && typeof value.evidence.import_sha256 === 'string';
@@ -162,7 +165,7 @@ export function PortalJobs(props: OperatorProps & { onOpenCase: (caseId: string)
 export function CaseWorkflow({ caseId, open, deviceCase, ...props }: OperatorProps & { caseId: string; open: boolean; deviceCase: boolean }) {
   const { session } = props;
   const { run, busy, issue } = useOperatorTask(props);
-  const [data, setData] = useState<{ jobs: ActivityPage<Job>; findings: ActivityPage<Finding>; collaborators: string[] }>();
+  const [data, setData] = useState<{ jobs: ActivityPage<Job>; findings: ActivityPage<Finding> | null; collaborators: string[] }>();
   const [reviewFilter, setReviewFilter] = useState<ReviewFilter>('pending');
   const [report, setReport] = useState<{ label: string; data: unknown }>();
   const path = `/cases/${caseId}`;
@@ -172,6 +175,7 @@ export function CaseWorkflow({ caseId, open, deviceCase, ...props }: OperatorPro
   const canReadTechnical = supervisor || analyst || (deviceCase && session.roles.includes('forensic_examiner'));
   const examiner = session.roles.includes('forensic_examiner');
   const pageSize = 25;
+  const findingsPage = data?.findings;
 
   function loadFindings(filter: ReviewFilter, signal: AbortSignal, after?: string) {
     const query = new URLSearchParams({ limit: String(pageSize) });
@@ -188,7 +192,8 @@ export function CaseWorkflow({ caseId, open, deviceCase, ...props }: OperatorPro
 
   async function refresh(signal: AbortSignal) {
     const [jobs, findings, collaborators] = await Promise.all(
-      [loadJobs(signal), loadFindings(reviewFilter, signal), request(`${path}/collaborators`, { signal }, session)],
+      [loadJobs(signal), canReadTechnical ? loadFindings(reviewFilter, signal) : null,
+        request(`${path}/collaborators`, { signal }, session)],
     );
     signal.throwIfAborted();
     setData({
@@ -272,42 +277,48 @@ export function CaseWorkflow({ caseId, open, deviceCase, ...props }: OperatorPro
             signal.throwIfAborted();
             setData((previous) => previous && { ...previous, jobs: appendActivity(previous.jobs, jobs) });
           }, 'Pekerjaan berikutnya gagal dimuat.')}>Muat pekerjaan berikutnya</button>}
-          <h4>Review temuan sintetis</h4>
-          <label>Status review
-            <select value={reviewFilter} onChange={(event) => filterFindings(event.target.value as ReviewFilter)}>
-              {Object.entries(reviewStatuses).map(([status, label]) => <option key={status} value={status}>{label}</option>)}
-              <option value="all">Semua temuan</option>
-            </select>
-          </label>
-          <p role="status">{data.findings.items.length} dari {data.findings.total} temuan</p>
-          {data.findings.total === 0 && <p>Belum ada temuan untuk filter ini.</p>}
-          <ul>{data.findings.items.map((finding) => {
-            const evidence = finding.evidence;
-            return <li key={finding.id}>
-              <p><strong>{reviewStatuses[finding.verification]}</strong> · Indikator <code>{evidence.indicator}</code>
-                {' · '}Status ancaman {finding.threat_status} · Severity {finding.severity}</p>
-              <p>Sumber <code>{evidence.source_ref}</code> · <time dateTime={evidence.observed_at}>{formatTimestamp(evidence.observed_at)}</time></p>
-              <p>Impor <code>{evidence.import_id}</code> · SHA-256 <code>{evidence.import_sha256}</code></p>
-              <p>SHA-256 temuan <code>{finding.evidence_sha256}</code> · {evidence.limitation}</p>
-              {finding.review_note && <p>{finding.review_note}</p>}
-              {canReview && finding.verification === 'pending' && <form onSubmit={(event) => review(event, finding)}>
-                <label>Keputusan
-                  <select name="decision">
-                    <option value="verified">Terverifikasi</option>
-                    <option value="inconclusive">Tidak meyakinkan</option>
-                    <option value="rejected">Ditolak</option>
-                  </select>
-                </label>
-                <label>Catatan relevansi dan batasan <input name="note" maxLength={500} required /></label>
-                <button type="submit">Simpan keputusan</button>
-              </form>}
-            </li>;
-          })}</ul>
-          {data.findings.next && <button type="button" onClick={() => void run(async (signal) => {
-            const findings = await loadFindings(reviewFilter, signal, data.findings.next ?? undefined);
-            signal.throwIfAborted();
-            setData((previous) => previous && { ...previous, findings: appendActivity(previous.findings, findings) });
-          }, 'Temuan berikutnya gagal dimuat.')}>Muat temuan berikutnya</button>}
+          {findingsPage && <>
+            <h4>Review temuan sintetis</h4>
+            <label>Status review
+              <select value={reviewFilter} onChange={(event) => filterFindings(event.target.value as ReviewFilter)}>
+                {Object.entries(reviewStatuses).map(([status, label]) => <option key={status} value={status}>{label}</option>)}
+                <option value="all">Semua temuan</option>
+              </select>
+            </label>
+            <p role="status">{findingsPage.items.length} dari {findingsPage.total} temuan</p>
+            {findingsPage.total === 0 && <p>Belum ada temuan untuk filter ini.</p>}
+            <ul>{findingsPage.items.map((finding) => {
+              const evidence = finding.evidence;
+              return <li key={finding.id}>
+                <p><strong>{reviewStatuses[finding.verification]}</strong> · Indikator <code>{evidence.indicator}</code>
+                  {' · '}Status ancaman {finding.threat_status} · Severity {finding.severity}</p>
+                <p>Sumber <code>{evidence.source_ref}</code> · <time dateTime={evidence.observed_at}>{formatTimestamp(evidence.observed_at)}</time></p>
+                <p>Impor <code>{evidence.import_id}</code> · SHA-256 <code>{evidence.import_sha256}</code></p>
+                <p>SHA-256 temuan <code>{finding.evidence_sha256}</code> · {evidence.limitation}</p>
+                {finding.review_note && <p>{finding.review_note}</p>}
+                {finding.reviewed_by && <p>Peninjau <code>{finding.reviewed_by}</code>
+                  {finding.reviewed_at && <> · <time dateTime={finding.reviewed_at}>{formatTimestamp(finding.reviewed_at)}</time></>}
+                </p>}
+                {canReview && finding.verification === 'pending' && <form onSubmit={(event) => review(event, finding)}>
+                  <label>Keputusan
+                    <select name="decision">
+                      <option value="verified">Terverifikasi</option>
+                      <option value="inconclusive">Tidak meyakinkan</option>
+                      <option value="rejected">Ditolak</option>
+                    </select>
+                  </label>
+                  <label>Catatan relevansi dan batasan <input name="note" maxLength={500} required /></label>
+                  <button type="submit">Simpan keputusan</button>
+                </form>}
+              </li>;
+            })}</ul>
+            {findingsPage.next && <button type="button" onClick={() => void run(async (signal) => {
+              const findings = await loadFindings(reviewFilter, signal, findingsPage.next ?? undefined);
+              signal.throwIfAborted();
+              setData((previous) => previous?.findings
+                ? { ...previous, findings: appendActivity(previous.findings, findings) } : previous);
+            }, 'Temuan berikutnya gagal dimuat.')}>Muat temuan berikutnya</button>}
+          </>}
           <h4>Kolaborator kasus</h4>
           <ul>{data.collaborators.map((username) => <li key={username}>{username}{' '}
             {supervisor && open && <button type="button" onClick={() => changeCollaborator(username, 'DELETE')}>Cabut akses</button>}
